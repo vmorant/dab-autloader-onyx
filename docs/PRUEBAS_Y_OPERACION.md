@@ -1,6 +1,7 @@
-# Despliegue y pruebas
+# Pruebas y operación
 
-Cómo llevar el bundle de ingesta de un portátil a pro, y cómo probarlo en cada paso.
+Cómo probar el bundle en cada entorno y cómo operarlo. Los requisitos y el despliegue están en
+[`PUESTA_EN_MARCHA.md`](PUESTA_EN_MARCHA.md).
 
 | Nivel | Dónde | Qué prueba | Cuándo |
 |---|---|---|---|
@@ -10,145 +11,11 @@ Cómo llevar el bundle de ingesta de un portátil a pro, y cómo probarlo en cad
 | 4. CLEX real | dev | Contrato real con CLEX, escritura cross-tenant, trigger file arrival | Alta de cada contenedor o conector |
 | 5. Volumen | pre | Tiempos, coste, file events, concurrencia | Antes de pro |
 
----
-
-## 0. Prerrequisitos (una vez por workspace)
-
-### 0.1 Valores en `databricks.yml`
-
-| Dónde | Valor |
-|---|---|
-| `targets.*.workspace.host` | URL de `odp-dbx-datateam01-<env>` |
-| `pre`/`pro` → `pipeline_policy_id`, `job_policy_id` | Ids de las cluster policies (0.2) |
-| `pre`/`pro` → `run_as_sp`, `deploy_sp` | Application ids de `svc-dbks-datateam01-<env>-run` y `-deploy` |
-| `pro` → `notification_emails` | Buzón del equipo |
-| `landing_storage_account` | Si el naming real difiere de `odpdatateam01<env>lzsto01` |
-
-En dev las policies pueden quedar vacías mientras se prueba; en pre y pro no.
-
-### 0.2 Infraestructura (Group / plataforma)
-
-| Elemento | Detalle |
-|---|---|
-| Catálogos | `odp_datateam01_<env>_bronze` y `odp_datateam01_<env>_silver` |
-| Storage de landing | Un contenedor por entrada de `containers.yml`. En dev, además `e2e-selftest` |
-| Escritura de CLEX | SPN de CLEX (otro tenant) con escritura **solo** en su contenedor |
-| External location | Sobre el landing (por cuenta o por contenedor). Si es por cuenta, conviene una propia para `e2e-selftest`, para dar `WRITE FILES` solo ahí |
-| Volume de wheels | `odp_platform_<env>.libs.wheels` |
-| Cluster policies | Pipeline: `cluster_type: dlt`, modo de acceso standard, tags. Job: `SINGLE_USER`, tags |
-| Service principals | `svc-dbks-datateam01-<env>-deploy` (CI) y `-run` (ejecución), añadidos al workspace |
-| Rol sobre el SP de ejecución | El SP de deploy necesita el rol **Service Principal User** sobre el de ejecución; sin él, el deploy no puede fijar `run_as` |
-| File events (opcional al principio) | Roles del Access Connector, resource provider de Event Grid y owner o `MANAGE` en la external location para activarlos. Mientras no estén, `file_events: "false"` |
-
-### 0.3 Permisos de Unity Catalog
-
-Los esquemas por contenedor y el Volume `odp_system` los crea el bundle, y con ellos los grants de lectura
-(`readers`) y, en pre y pro, los de escritura del SP de ejecución.
-
-**Quién manda en esos grants.** Los grants de un recurso del bundle son declarativos: es muy probable que un
-deploy revoque los que se hayan dado a mano, o desde governance, sobre esos esquemas y Volumes (sin
-confirmar en la documentación). O todos en el bundle (`readers` en `containers.yml`) o todos fuera
-(`manage_schemas: "false"`), nunca mezclados. Comprobarlo en el plan del primer deploy de pre
-(`databricks bundle plan -t pre`) y acordarlo con governance.
-
-Lo que va fuera del bundle:
-
-```sql
--- ===== dev: grupo de desarrolladores del equipo (despliegan y ejecutan como ellos mismos)
-GRANT USE CATALOG, CREATE SCHEMA ON CATALOG odp_datateam01_dev_bronze TO `grp-datateam01-dbx-dev`;
-GRANT USE CATALOG, CREATE SCHEMA ON CATALOG odp_datateam01_dev_silver TO `grp-datateam01-dbx-dev`;
-GRANT READ FILES ON EXTERNAL LOCATION `<el-landing-dev>` TO `grp-datateam01-dbx-dev`;
-GRANT READ FILES, WRITE FILES ON EXTERNAL LOCATION `<el-landing-dev-e2e>` TO `grp-datateam01-dbx-dev`;
-GRANT USE CATALOG ON CATALOG odp_platform_dev TO `grp-datateam01-dbx-dev`;
-GRANT USE SCHEMA ON SCHEMA odp_platform_dev.libs TO `grp-datateam01-dbx-dev`;
-GRANT READ VOLUME, WRITE VOLUME ON VOLUME odp_platform_dev.libs.wheels TO `grp-datateam01-dbx-dev`;
--- El SP del CI en dev (despliega y ejecuta el e2e): los mismos grants que el grupo.
-
--- ===== pre / pro (sustituir <env>)
--- SP de deploy: crea esquemas y Volumes, publica la wheel
-GRANT USE CATALOG, CREATE SCHEMA ON CATALOG odp_datateam01_<env>_bronze TO `<app-id-deploy>`;
-GRANT USE CATALOG, CREATE SCHEMA ON CATALOG odp_datateam01_<env>_silver TO `<app-id-deploy>`;
-GRANT USE CATALOG ON CATALOG odp_platform_<env> TO `<app-id-deploy>`;
-GRANT USE SCHEMA ON SCHEMA odp_platform_<env>.libs TO `<app-id-deploy>`;
-GRANT READ VOLUME, WRITE VOLUME ON VOLUME odp_platform_<env>.libs.wheels TO `<app-id-deploy>`;
--- SP de ejecución: el bundle le da escritura en los esquemas y en odp_system; aquí, el resto
-GRANT USE CATALOG ON CATALOG odp_datateam01_<env>_bronze TO `<app-id-run>`;
-GRANT USE CATALOG ON CATALOG odp_datateam01_<env>_silver TO `<app-id-run>`;
-GRANT READ FILES ON EXTERNAL LOCATION `<el-landing-<env>>` TO `<app-id-run>`;
-GRANT USE CATALOG ON CATALOG odp_platform_<env> TO `<app-id-run>`;
-GRANT USE SCHEMA ON SCHEMA odp_platform_<env>.libs TO `<app-id-run>`;
-GRANT READ VOLUME ON VOLUME odp_platform_<env>.libs.wheels TO `<app-id-run>`;
-```
-
-El trigger file arrival necesita lectura sobre la ubicación que vigila (`_manifests/`) y `CAN MANAGE` sobre el
-job. La documentación no aclara con qué identidad lo comprueba: en pre, con el trigger activo, verificar que
-salta con el `run_as_sp` como dueño. Para activar file events en la external location hay que ser su owner o
-tener `MANAGE`.
-
-**Consumidores de silver.** Las tablas de silver son streaming tables de SDP. Quien no es su dueño solo las
-puede leer desde un SQL warehouse, un cluster con modo de acceso standard o un cluster dedicado con DBR 15.4+
-en un workspace con serverless (el filtrado se ejecuta en serverless). Sin serverless, los jobs de gold
-(Pegasus Enhanced migrado) tienen que usar clusters standard o SQL warehouse.
-
-### 0.4 Comprobación rápida
-
-```bash
-databricks auth login --host https://adb-XXXX.azuredatabricks.net --profile odp-dev
-databricks current-user me -p odp-dev
-databricks catalogs get odp_datateam01_dev_bronze -p odp-dev
-databricks fs ls dbfs:/Volumes/odp_platform_dev/libs/wheels/ -p odp-dev
-```
-
-Y el landing, desde un SQL warehouse o un notebook (el CLI no lista rutas `abfss://`):
-
-```sql
-LIST 'abfss://motors-sqlserver@odpdatateam01devlzsto01.dfs.core.windows.net/';
-LIST 'abfss://e2e-selftest@odpdatateam01devlzsto01.dfs.core.windows.net/';
-```
-
-Si falla, falta la external location o el `READ FILES`: el job fallaría igual.
+Los niveles 1 y 2 están en la fase 1 de [`PUESTA_EN_MARCHA.md`](PUESTA_EN_MARCHA.md#5-despliegue-paso-a-paso).
 
 ---
 
-## 1. Local
-
-```bash
-uv sync                       # .venv con databricks-bundles (lo usa el CLI para generar los recursos)
-uv run pytest -q              # 133 tests
-databricks bundle validate -t dev -p odp-dev
-```
-
-`validate` ya ejecuta el generador: un error en `containers.yml` sale aquí, con todos los errores juntos, antes
-de tocar el workspace. CLI y `databricks-bundles` en la misma versión (1.21).
-
-## 2. Publicar la wheel en dev
-
-```bash
-scripts/publish_wheel.sh dev odp-dev
-# → /Volumes/odp_platform_dev/libs/wheels/odp_framework-0.4.0-py3-none-any.whl
-```
-
-Si la versión ya está publicada con el mismo contenido no hace nada; con otro contenido falla: hay que subir la
-versión (`pyproject.toml`, `src/odp_framework/__init__.py` y `framework_wheel` de cada target).
-
-## 3. Desplegar en dev
-
-```bash
-databricks bundle deploy  -t dev -p odp-dev
-databricks bundle summary -t dev -p odp-dev
-```
-
-Qué crea `mode: development`:
-
-- Jobs y pipelines con prefijo `[dev <usuario>]` y **triggers en pausa**.
-- **Esquemas propios**: `odp_datateam01_dev_bronze.dev_<usuario>_motors_sqlserver`, y lo mismo en silver. Cada
-  desarrollador tiene su registro, bronze, silver y checkpoints; el landing es común, así que cada uno carga lo
-  que haya en él en sus tablas.
-- Pipelines en modo desarrollo: sin reintentos automáticos y el cluster se queda encendido un rato tras cada
-  actualización para reutilizarse.
-- Por contenedor: `ingest_<contenedor>` y `silver_<contenedor>`. Para `e2e-selftest`, además `e2e_e2e_selftest`.
-
-## 4. Prueba end-to-end con el simulador de CLEX
+## 1. Prueba end-to-end con el simulador de CLEX
 
 ```bash
 databricks bundle run e2e_e2e_selftest -t dev -p odp-dev
@@ -175,7 +42,7 @@ Detalles:
   (`e2e_<job_run_id>_<tabla>`).
 - **Resultado**: cada `check_N` imprime una línea por comprobación (`OK`/`FAIL`, valor y esperado) y falla si
   alguna no cuadra. `bundle run` devuelve código distinto de 0.
-- **Si falla**, `cleanup` no se ejecuta y las tablas se quedan para investigar (consultas en el punto 6). La
+- **Si falla**, `cleanup` no se ejecuta y las tablas se quedan para investigar (consultas en el punto 3). La
   siguiente ejecución empieza con `reset`, que borra todo lo del e2e en ese despliegue (tablas `e2e_*`, sus
   filas de control, checkpoints y landing): se puede repetir sin limpiar a mano.
 - Si el `DROP` de las tablas de silver no estuviera permitido desde el job cluster, `reset` y `cleanup` lo
@@ -199,7 +66,7 @@ Atajo para el primer punto sin esperar al e2e completo, cuando ya hay alguna tab
 `databricks bundle run silver_e2e_selftest -t dev --validate-only` resuelve el grafo (instala la wheel y lee el
 registro) sin procesar datos.
 
-## 5. Prueba con CLEX real (dev)
+## 2. Prueba con CLEX real (dev)
 
 1. **Contrato.** Pasar al equipo de CLEX la sección "Contrato con CLEX" del README, `samples/` y el validador.
    Antes de escribir en el landing pueden validar sus manifiestos:
@@ -233,7 +100,7 @@ registro) sin procesar datos.
 | CLEX cortado a mitad | Parquet sin manifiesto | Bronze los carga cuando la tabla vuelva a cargarse; CDC los aplica a silver, full no. Hoy no hay aviso (siguientes pasos del README) |
 | Reintento de CLEX | Repetir una extracción | `run_id` nuevo; en CDC la secuencia evita duplicados en silver |
 
-## 6. Consultas de seguimiento
+## 3. Consultas de seguimiento
 
 `<esq>` es el esquema del contenedor: `dev_<usuario>_motors_sqlserver` en dev y `motors_sqlserver` en pre y pro.
 
@@ -268,41 +135,20 @@ Coste y tiempos por contenedor (pre/pro): `system.billing.usage` filtrando por `
 y `system.lakeflow.job_run_timeline` por `job_id`. Inicialización del grafo de silver: event log de la
 pipeline, eventos `update_progress` (de `INITIALIZING` a `RUNNING`).
 
-## 7. Pre y pro con CI (Azure DevOps)
+## 4. Pruebas en pre
 
-`ci/azure-pipelines.yml`:
-
-```
-PR a main → tests
-main      → tests → dev (wheel + deploy + e2e) → pre (aprobación) → pro (aprobación)
-```
-
-Montaje, una vez:
-
-1. Service connections ARM con workload identity federation (`sc-odp-datateam01-<env>`), cada una con su
-   `svc-dbks-datateam01-<env>-deploy`. Sin secretos: el CLI usa `DATABRICKS_AUTH_TYPE=azure-cli`.
-2. Variable groups `odp-datateam01-<env>` con `DATABRICKS_HOST`.
-3. Environments `odp-datateam01-pre` y `-pro` con aprobación manual.
-4. El SP del CI en dev con los grants de dev (0.3), incluido `WRITE FILES` en `e2e-selftest`.
-
-Qué cambia en `mode: production` (pre y pro): sin prefijos (esquemas `motors_sqlserver`), **triggers activos**,
-jobs y pipelines como `run_as_sp`, permisos `CAN_MANAGE` para el SP de deploy y `CAN_VIEW` para el grupo.
-
-El CI despliega **sin `--auto-approve`**: si un cambio fuera a borrar o recrear un esquema, un Volume o una
-pipeline (que se lleva sus tablas de silver), el CLI se para y el pipeline falla. Ese cambio se revisa y se
-aplica a mano.
-
-**Pruebas en pre** (volumen real de CLEX pre):
+Con el bundle desplegado en pre por el CI (fase 3 de [`PUESTA_EN_MARCHA.md`](PUESTA_EN_MARCHA.md)) y CLEX
+pre entregando volumen real:
 
 - Tiempo de inicialización del grafo de silver con todas las tablas del contenedor.
-- `file_events: "true"` en el target una vez activados en la external location; comprobar que el trigger y
-  Auto Loader siguen detectando ficheros.
+- Trigger file arrival con el storage cerrado (requisito N3) y, después, `file_events: "true"` en el target
+  una vez activados en la external location: el trigger y Auto Loader tienen que seguir detectando ficheros.
 - Concurrencia del for_each (`ingest.concurrency`) y tamaño del cluster frente a duración y coste.
 - Qué hacen `silver` y `report` cuando `has_data` es falso (ejecución sin datos nuevos).
 - Alta progresiva: un contenedor nuevo entra con `environments: [dev]`, luego `[dev, pre]` y, al quitar el
   campo, en todos.
 
-## 8. Operación
+## 5. Operación
 
 | Necesidad | Cómo |
 |---|---|

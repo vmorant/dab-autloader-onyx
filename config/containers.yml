@@ -20,7 +20,7 @@
 #                      conservan. Borrar la entrada es la baja definitiva (borra la
 #                      pipeline y sus tablas de silver; el deploy pide confirmación)
 #   e2e                true = además un job e2e que simula a CLEX (solo dev/pre;
-#                      contenedor dedicado, ver docs/DESPLIEGUE.md)
+#                      contenedor dedicado, ver docs/PRUEBAS_Y_OPERACION.md)
 #   ingest / pipelines / trigger / report   overrides de platform.yml
 
 containers:

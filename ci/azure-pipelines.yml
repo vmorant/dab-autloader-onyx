@@ -3,7 +3,7 @@
 #   PR a main  → tests
 #   main       → tests → dev (wheel + deploy + e2e) → pre (aprobación) → pro (aprobación)
 #
-# Requisitos (ver docs/DESPLIEGUE.md, paso 0):
+# Requisitos (ver docs/PUESTA_EN_MARCHA.md, 2.7):
 #   - Service connections ARM con workload identity federation, una por entorno:
 #       sc-odp-datateam01-dev | -pre | -pro  → svc-dbks-datateam01-<env>-deploy
 #   - Variable groups odp-datateam01-<env> con DATABRICKS_HOST.

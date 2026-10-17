@@ -185,7 +185,8 @@ src/odp_framework/             la wheel
 samples/                       manifiestos de ejemplo (contrato 2.0) y disposición del landing
 scripts/publish_wheel.sh       publicación inmutable (e idempotente) de la wheel en el Volume del entorno
 ci/                            Azure DevOps: tests → dev + e2e → pre → pro
-docs/DESPLIEGUE.md             cómo desplegar y probar, paso a paso
+docs/PUESTA_EN_MARCHA.md       qué se necesita y cómo desplegar en Databricks, de dev a pro
+docs/PRUEBAS_Y_OPERACION.md    e2e, prueba con CLEX real, consultas de seguimiento y operación
 tests/                         133 tests (sin Spark: dobles de prueba para spark y dp; el escenario e2e
                                se comprueba contra un modelo de referencia en SQLite)
 ```
@@ -236,8 +237,10 @@ deploy avisa si la versión fijada no coincide con la del generador.
 
 ## Despliegue y pruebas
 
-Paso a paso en [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md): prerrequisitos, primer despliegue en dev, prueba
-end-to-end, prueba con CLEX real, promoción a pre y pro por CI, operación y marcha atrás.
+- [`docs/PUESTA_EN_MARCHA.md`](docs/PUESTA_EN_MARCHA.md): requisitos (quién, cómo comprobarlo), decisiones
+  abiertas, configuración, despliegue de dev a pro, verificación y errores frecuentes.
+- [`docs/PRUEBAS_Y_OPERACION.md`](docs/PRUEBAS_Y_OPERACION.md): prueba end-to-end, prueba con CLEX real,
+  consultas de seguimiento, pruebas en pre y operación.
 
 ```bash
 uv sync && uv run pytest
@@ -252,25 +255,20 @@ jobs con prefijo `[dev usuario]` y triggers en pausa. En pre y pro despliega el 
 
 ## Requisitos en el workspace
 
-- Catálogos `odp_{team}_{env}_bronze` y `_silver`. Con `manage_schemas: "true"` (valor por defecto) el
-  bundle crea los esquemas de cada contenedor (con grants para `readers`) y el Volume `odp_system`. Quien
-  despliega necesita `USE CATALOG` y `CREATE SCHEMA` en ambos catálogos.
-- External location sobre el storage de landing con `READ FILES` para el `run_as_sp`. El contenedor
-  `e2e-selftest` necesita además `WRITE FILES` para quien ejecute el e2e (el simulador escribe en él).
-- **File events** en esa external location (`file_events: "true"`). Sin ellos hay un máximo de 50 jobs con
-  trigger por workspace y 10.000 ficheros por ruta. Requieren roles del Access Connector sobre el storage
-  (Storage Blob Data Contributor, EventGrid EventSubscription Contributor, Storage Queue Data Contributor;
-  lista sacada de la comunidad de Databricks, a confirmar en la documentación oficial) y el resource
-  provider de Event Grid registrado. Hay que pedírselos a Group.
-- Cluster policies:
-  - pipeline de silver: `cluster_type: dlt`, tags obligatorios y modo de acceso standard, que es el que
-    exige Unity Catalog en pipelines clásicas;
-  - job cluster: tags obligatorios y modo de acceso dedicado (`SINGLE_USER`) para el `run_as_sp`.
-- Volume `odp_platform_<env>.libs.wheels` de solo lectura para los equipos.
-- **Lectura de silver por los consumidores.** Las tablas de silver son streaming tables de SDP. Su dueño
-  (el `run_as_sp`) las lee desde cualquier compute. Los demás, desde un SQL warehouse, un cluster con modo de
-  acceso standard, o un cluster dedicado con DBR 15.4+ **solo si el workspace tiene serverless** (el filtrado
-  se ejecuta en serverless). Sin serverless, los jobs de gold y los analistas usan standard o SQL warehouse.
+Inventario completo, con responsable y cómo comprobar cada punto, en
+[`docs/PUESTA_EN_MARCHA.md`](docs/PUESTA_EN_MARCHA.md#2-requisitos). Lo imprescindible:
+
+- Azure y red: workspace con Unity Catalog, cuenta de landing con un contenedor por entrada de
+  `containers.yml`, Access Connector, private endpoints desde el workspace y una ruta privada desde el ADF de
+  CLEX (otro tenant).
+- Unity Catalog: storage credential, external location del landing, catálogos `odp_{team}_{env}_bronze` y
+  `_silver`, Volume `odp_platform_<env>.libs.wheels` y los grants que van fuera del bundle.
+- Identidades: SPs de deploy y de ejecución por entorno, rol Service Principal User del primero sobre el
+  segundo, grupos y `CAN_USE` de las cluster policies.
+- Workspace: cluster policies de jobs y de pipelines, DBR 16.4 LTS y `environment.dependencies` en pipelines
+  clásicas.
+- Consumidores de silver: sin serverless, SQL warehouse o clusters standard (las tablas son streaming tables
+  de SDP).
 
 ## Qué está validado y qué falta probar
 
@@ -289,7 +287,7 @@ Validado aquí:
 - `databricks bundle validate` (CLI 1.21) de dev, pre y pro contra un workspace simulado, y `bundle plan`
   de dev: el esquema prefijado de `mode: development` llega resuelto a `config_json`, `odp.config` y el Volume.
 
-Lo cubre el job e2e en el workspace (docs/DESPLIEGUE.md, paso 4):
+Lo cubre el job e2e en el workspace (docs/PRUEBAS_Y_OPERACION.md, punto 1):
 
 1. Wheel desde un Volume en la pipeline **clásica** de silver (`environment.dependencies`, en Public Preview).
 2. Que un flow full no falle en las actualizaciones en las que no llega ningún snapshot nuevo (paso 3:
@@ -317,4 +315,4 @@ Pendiente de medir con volumen real (pre):
 - Retención de snapshots full antiguos en bronze (mantener los últimos N runs).
 - Registro incremental cuando `odp_manifests` crezca mucho (hoy se recalcula desde todos los manifiestos).
   Lo mismo para `odp_rejected_runs`, que no se poda y entra en el plan de silver como lista `NOT IN`.
-- Grants de los esquemas del bundle: decidir con governance quién los gestiona (ver docs/DESPLIEGUE.md, 0.3).
+- Grants de los esquemas del bundle: decidir con governance quién los gestiona (ver docs/PUESTA_EN_MARCHA.md, D3).

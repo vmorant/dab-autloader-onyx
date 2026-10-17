@@ -1,0 +1,17 @@
+# Pasos comunes: Python, uv, entorno del repo (.venv con databricks-bundles) y CLI de Databricks.
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: "3.11"
+
+  - script: |
+      set -euo pipefail
+      python -m pip install --quiet "uv==$(UV_VERSION)"
+      uv sync --frozen
+    displayName: uv sync (.venv del bundle)
+
+  - script: |
+      set -euo pipefail
+      curl -fsSL "https://raw.githubusercontent.com/databricks/setup-cli/v$(DATABRICKS_CLI_VERSION)/install.sh" | sudo sh
+      databricks --version
+    displayName: Databricks CLI $(DATABRICKS_CLI_VERSION)

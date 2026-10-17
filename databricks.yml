@@ -1,0 +1,132 @@
+# ONYX Data Platform — bundle de ingesta CLEX → bronze → silver de un equipo.
+#
+# Un job por contenedor del landing (custodian × CLEX), generado desde config/
+# por resources/__init__.py (Python DABs): bronze con Auto Loader (for_each por
+# tabla) y silver con SDP (AUTO CDC). Las tablas las definen los manifiestos
+# de CLEX. Ver README.md.
+
+bundle:
+  name: odp-ingestion-datateam01
+  databricks_cli_version: ">= 0.275.0"
+
+python:
+  venv_path: .venv
+  resources:
+    - "resources:load_resources"
+
+sync:
+  # Al workspace solo sube la fuente de la pipeline de silver; el framework
+  # se instala como wheel versionada (variable framework_wheel).
+  exclude:
+    - src/odp_framework/**
+    - config/**            # se lee en el deploy y viaja en el job y la pipeline
+    - tests/**
+    - samples/**
+    - scripts/**
+
+variables:
+  team_id:
+    description: teamId estable del equipo (naming ODP)
+    default: datateam01
+  env:
+    description: dev | pre | pro
+  landing_storage_account:
+    description: Storage account del landing del workspace (odp{owner}{env}lzsto{seq})
+  framework_wheel:
+    description: >-
+      Wheel de odp_framework fijada para este target (ruta en un Volume de solo
+      lectura). Subir de versión = PR que cambia esta ruta.
+  pipeline_policy_id:
+    description: Cluster policy de la pipeline de silver (cluster_type dlt, tags obligatorios)
+    default: ""
+  job_policy_id:
+    description: Cluster policy del job cluster (register, ingest por tabla y report)
+    default: ""
+  spark_version:
+    description: DBR del job cluster (Auto Loader de bronze y tareas wheel)
+    default: "16.4.x-scala2.12"
+  notification_emails:
+    description: Emails (separados por coma) que reciben los fallos del job
+    default: ""
+  file_events:
+    description: >-
+      true si la external location del landing tiene file events activados
+      (requiere los roles del Access Connector; sin ellos, Auto Loader lista).
+    default: "false"
+  manage_schemas:
+    description: >-
+      true: el bundle crea por contenedor los esquemas bronze/silver (con grants
+      de lectura para 'readers') y el Volume odp_system. Requiere que el SP de
+      deploy tenga USE CATALOG y CREATE SCHEMA en los catálogos del equipo.
+    default: "true"
+  run_as_sp:
+    description: Application ID del service principal que ejecuta jobs y pipelines
+    default: ""
+  deploy_sp:
+    description: Application ID del service principal del CI que despliega (CAN_MANAGE)
+    default: ""
+  team_group:
+    description: Grupo Entra del equipo (permiso de lectura sobre jobs y pipelines)
+    default: grp-datateam01-dbx-reader
+
+targets:
+  dev:
+    # mode: development → jobs y pipelines con prefijo [dev usuario], triggers en
+    # pausa y esquemas propios por desarrollador (dev_<usuario>_<contenedor>):
+    # cada uno tiene su registro, bronze, silver y checkpoints; el landing es común.
+    mode: development
+    default: true
+    workspace:
+      host: https://adb-0000000000000000.0.azuredatabricks.net   # odp-dbx-datateam01-dev
+    # Para probar el trigger file arrival con CLEX real en dev:
+    # presets:
+    #   trigger_pause_status: UNPAUSED
+    variables:
+      env: dev
+      landing_storage_account: odpdatateam01devlzsto01
+      framework_wheel: /Volumes/odp_platform_dev/libs/wheels/odp_framework-0.4.0-py3-none-any.whl
+
+  pre:
+    mode: production
+    workspace:
+      host: https://adb-0000000000000001.1.azuredatabricks.net   # odp-dbx-datateam01-pre
+      # Despliega el CI con svc-dbks-datateam01-pre-deploy: una sola copia por target
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.run_as_sp}
+    permissions:
+      - level: CAN_MANAGE
+        service_principal_name: ${var.deploy_sp}
+      - level: CAN_VIEW
+        group_name: ${var.team_group}
+    variables:
+      env: pre
+      landing_storage_account: odpdatateam01prelzsto01
+      framework_wheel: /Volumes/odp_platform_pre/libs/wheels/odp_framework-0.4.0-py3-none-any.whl
+      pipeline_policy_id: "<policy-id-pipelines-pre>"
+      job_policy_id: "<policy-id-jobs-pre>"
+      run_as_sp: "<application-id-svc-dbks-datateam01-pre-run>"
+      deploy_sp: "<application-id-svc-dbks-datateam01-pre-deploy>"
+
+  pro:
+    mode: production
+    workspace:
+      host: https://adb-0000000000000002.2.azuredatabricks.net   # odp-dbx-datateam01-pro
+      # Despliega el CI con svc-dbks-datateam01-pro-deploy: una sola copia por target
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      service_principal_name: ${var.run_as_sp}
+    permissions:
+      - level: CAN_MANAGE
+        service_principal_name: ${var.deploy_sp}
+      - level: CAN_VIEW
+        group_name: ${var.team_group}
+    variables:
+      env: pro
+      landing_storage_account: odpdatateam01prolzsto01
+      framework_wheel: /Volumes/odp_platform_pro/libs/wheels/odp_framework-0.4.0-py3-none-any.whl
+      pipeline_policy_id: "<policy-id-pipelines-pro>"
+      job_policy_id: "<policy-id-jobs-pro>"
+      run_as_sp: "<application-id-svc-dbks-datateam01-pro-run>"
+      deploy_sp: "<application-id-svc-dbks-datateam01-pro-deploy>"
+      notification_emails: "<buzon-equipo@axa-partners.com>"

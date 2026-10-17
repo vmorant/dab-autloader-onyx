@@ -1,0 +1,63 @@
+# Stage de despliegue de un entorno: wheel (idempotente) → validate → deploy [→ e2e].
+#
+# Sin --auto-approve: si un deploy fuera a borrar o recrear un esquema o un
+# Volume (pérdida de datos o de checkpoints), el CLI se para y el pipeline falla.
+# Ese cambio se revisa y se aplica a mano.
+parameters:
+  - name: env
+    type: string
+  - name: dependsOn
+    type: object
+    default: []
+  - name: runE2E
+    type: boolean
+    default: false
+
+stages:
+  - stage: deploy_${{ parameters.env }}
+    displayName: Despliegue ${{ parameters.env }}
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      - group: odp-datateam01-${{ parameters.env }}      # DATABRICKS_HOST
+    jobs:
+      - deployment: deploy
+        displayName: Bundle ${{ parameters.env }}
+        environment: odp-datateam01-${{ parameters.env }}   # aprobaciones en pre y pro
+        timeoutInMinutes: 180
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: steps-setup.yml
+
+                - task: AzureCLI@2
+                  displayName: Wheel, validate y deploy (${{ parameters.env }})
+                  inputs:
+                    azureSubscription: sc-odp-datateam01-${{ parameters.env }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      export DATABRICKS_HOST="$(DATABRICKS_HOST)"
+                      export DATABRICKS_AUTH_TYPE=azure-cli     # token del SP de la service connection
+                      scripts/publish_wheel.sh ${{ parameters.env }}
+                      databricks bundle validate -t ${{ parameters.env }}
+                      databricks bundle deploy -t ${{ parameters.env }}
+                      databricks bundle summary -t ${{ parameters.env }}
+
+                - ${{ if parameters.runE2E }}:
+                    - task: AzureCLI@2
+                      displayName: e2e (simulador de CLEX)
+                      timeoutInMinutes: 150
+                      inputs:
+                        azureSubscription: sc-odp-datateam01-${{ parameters.env }}
+                        scriptType: bash
+                        scriptLocation: inlineScript
+                        inlineScript: |
+                          set -euo pipefail
+                          export DATABRICKS_HOST="$(DATABRICKS_HOST)"
+                          export DATABRICKS_AUTH_TYPE=azure-cli
+                          # Espera a que termine; código distinto de 0 si falla alguna comprobación.
+                          databricks bundle run e2e_e2e_selftest -t ${{ parameters.env }}

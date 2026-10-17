@@ -1,0 +1,84 @@
+"""Reconciliación manifiesto ↔ bronze (lógica pura, sin Spark).
+
+La ejecuta la tarea ``report`` al final de cada job, haya ido bien o mal. Solo
+mira entregas de tablas activas cuya especificación coincide con el registro:
+los manifiestos inválidos, en conflicto o de tablas no activas ya los señala la
+tarea ``register`` cuando llegan, y sus runs (``odp_rejected_runs``) no cuentan.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime
+from typing import Any, Iterable, Mapping
+
+from .findings import ERROR, INFO, WARN, Finding, as_utc
+from .manifest import run_version
+from .runtime import RuntimeConfig
+
+
+def _age_hours(ingested_at: datetime | None, now: datetime) -> float:
+    ingested = as_utc(ingested_at)
+    if ingested is None:
+        return 0.0
+    return (as_utc(now) - ingested).total_seconds() / 3600
+
+
+def evaluate(
+    cfg: RuntimeConfig,
+    manifests: Iterable[Mapping[str, Any]],
+    bronze_counts: Mapping[tuple[str, str], int],
+    now: datetime,
+    rejected: Mapping[str, frozenset[str]] | None = None,
+) -> list[Finding]:
+    """``manifests``: dicts con entity, run_id, load_type, source_path, row_count, _ingested_at.
+
+    ``cfg.entities`` son las entidades ACTIVE del registro; ``rejected``,
+    ``{tabla: run_ids}`` rechazados por register.
+    """
+    rejected = rejected or {}
+    findings: list[Finding] = []
+    versions: dict[str, dict[int, set[str]]] = defaultdict(lambda: defaultdict(set))
+
+    for m in manifests:
+        entity = cfg.entity_by_name(m.get("entity") or "")
+        run_id = m.get("run_id")
+        version = run_version(run_id)
+        if (entity is None or version is None
+                or m.get("source_path") != entity.source_path
+                or m.get("load_type") != entity.load_type
+                or run_id in rejected.get(entity.entity, ())):
+            continue
+        versions[entity.entity][version].add(run_id)
+
+        rows = m.get("row_count")
+        if entity.is_full and rows == 0 and not entity.allow_empty_snapshot:
+            findings.append(Finding(ERROR, "EMPTY_SNAPSHOT", entity.entity, run_id,
+                                    "Snapshot full vacío: no se aplica (borraría la réplica). Si es "
+                                    "legítimo, allow_empty_snapshot: true en la config de CLEX (nueva spec_version)."))
+            continue
+
+        loaded = int(bronze_counts.get((entity.entity, run_id), 0))
+        if rows is None or loaded == rows:
+            continue
+        age = _age_hours(m.get("_ingested_at"), now)
+        if age * 60 < cfg.row_count_grace_minutes:
+            findings.append(Finding(INFO, "PENDING", entity.entity, run_id,
+                                    f"{loaded}/{rows} filas en bronze; dentro del margen de gracia"))
+        elif loaded == 0 and age < cfg.pending_alert_hours:
+            findings.append(Finding(WARN, "NOT_INGESTED", entity.entity, run_id,
+                                    f"Manifiesto hace {age:.1f} h y 0/{rows} filas en bronze"))
+        elif loaded == 0:
+            findings.append(Finding(ERROR, "STALE_PENDING", entity.entity, run_id,
+                                    f"Manifiesto hace {age:.1f} h (> {cfg.pending_alert_hours} h) sin cargar; "
+                                    "riesgo de perder el run cuando caduque el landing"))
+        else:
+            findings.append(Finding(ERROR, "ROW_COUNT_MISMATCH", entity.entity, run_id,
+                                    f"{loaded} filas en bronze, {rows} en el manifiesto"))
+
+    for entity_name, by_version in versions.items():
+        for version, run_ids in by_version.items():
+            if len(run_ids) > 1:
+                findings.append(Finding(WARN, "DUPLICATE_VERSION", entity_name, ",".join(sorted(run_ids)),
+                                        f"Varios runs con la misma versión {version}; solo se aplica uno"))
+    return findings

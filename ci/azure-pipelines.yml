@@ -1,0 +1,60 @@
+# CI/CD del bundle de ingesta (Azure DevOps).
+#
+#   PR a main  → tests
+#   main       → tests → dev (wheel + deploy + e2e) → pre (aprobación) → pro (aprobación)
+#
+# Requisitos (ver docs/DESPLIEGUE.md, paso 0):
+#   - Service connections ARM con workload identity federation, una por entorno:
+#       sc-odp-datateam01-dev | -pre | -pro  → svc-dbks-datateam01-<env>-deploy
+#   - Variable groups odp-datateam01-<env> con DATABRICKS_HOST.
+#   - Environments odp-datateam01-pre y -pro con aprobación manual.
+#   - Salida a PyPI y GitHub desde el agente (uv, databricks-bundles, CLI). Si el
+#     pool de AXA no la tiene, sustituir por el feed interno de artefactos.
+
+trigger:
+  branches:
+    include: [main]
+
+pr:
+  branches:
+    include: [main]
+
+variables:
+  DATABRICKS_CLI_VERSION: "1.21.0"      # alinear con databricks-bundles (pyproject.toml)
+  UV_VERSION: "0.11.32"
+
+pool:
+  vmImage: ubuntu-latest                 # o el pool self-hosted de la plataforma
+
+stages:
+  - stage: test
+    displayName: Tests
+    jobs:
+      - job: unit
+        displayName: pytest (lógica del framework y generación del bundle)
+        steps:
+          - template: steps-setup.yml
+          - script: uv run pytest -q --junitxml=$(Build.ArtifactStagingDirectory)/pytest.xml
+            displayName: pytest
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: $(Build.ArtifactStagingDirectory)/pytest.xml
+
+  # dev: el despliegue de CI usa su propio prefijo (dev_<sp>_...) y no pisa a
+  # los desarrolladores. El e2e es la puerta para pasar a pre.
+  - template: deploy-stage.yml
+    parameters:
+      env: dev
+      dependsOn: [test]
+      runE2E: true
+
+  - template: deploy-stage.yml
+    parameters:
+      env: pre
+      dependsOn: [deploy_dev]
+
+  - template: deploy-stage.yml
+    parameters:
+      env: pro
+      dependsOn: [deploy_pre]

@@ -1,0 +1,24 @@
+{
+  "contract_version": "2.0",
+  "run_id": "20261016T021500Z_a71b0e44",
+  "data_path": "data/srv-motors-01/GDWR/dbo/policies/run_id=20261016T021500Z_a71b0e44/",
+  "file_count": 1,
+  "row_count": 48210,
+  "seq_min": null,
+  "seq_max": null,
+  "schema_hash": "sha256:0c7e5a3b1d9f7e5c3a1b9d7f5e3c1a9b7d5f3e1c9a7b5d3f1e9c7a5b3d1f9e7c",
+  "extracted_at": "2026-10-16T02:15:00Z",
+  "clex": {
+    "pipeline_run_id": "a71b0e44-0f1e-4d2c-8b3a-998877665544",
+    "connector": "sqlserver",
+    "instance": "odp-adf-datateam01-dev-clex-motors-sqlserver"
+  },
+  "load_spec": {
+    "target_table": "gdwr_policies",
+    "source_path": "srv-motors-01/GDWR/dbo/policies",
+    "load_type": "full",
+    "keys": ["policy_id"],
+    "full": {"allow_empty_snapshot": false},
+    "spec_version": 1
+  }
+}

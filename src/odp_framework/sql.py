@@ -1,4 +1,4 @@
-"""Helpers para construir SQL de forma segura a partir de la configuración."""
+"""Helpers to build SQL safely from configuration."""
 
 from __future__ import annotations
 
@@ -12,18 +12,18 @@ def is_identifier(name: str) -> bool:
 
 
 def quote_ident(name: str) -> str:
-    """Identificador entre backticks (escapando backticks internos)."""
+    """Identifier in backticks (escaping inner backticks)."""
     return "`" + name.replace("`", "``") + "`"
 
 
 def sql_literal(value: str) -> str:
-    """Literal de texto SQL con comillas simples escapadas."""
+    """SQL string literal with escaped single quotes."""
     return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def in_condition(column: str, values: list[str] | tuple[str, ...]) -> str:
-    """``col IN ('a', 'b')`` con identificador y literales escapados."""
+    """``col IN ('a', 'b')`` with escaped identifier and literals."""
     if not values:
-        raise ValueError("in_condition requiere al menos un valor")
+        raise ValueError("in_condition requires at least one value")
     literals = ", ".join(sql_literal(v) for v in values)
     return f"{quote_ident(column)} IN ({literals})"

@@ -1,20 +1,22 @@
-"""Capa bronze: landing → bronze con Auto Loader (sin SDP).
+"""Bronze layer: landing → bronze with Auto Loader (no SDP).
 
-Una ejecución por tabla (una iteración del for_each del job):
+One run per table (one iteration of the job's for_each):
 
-* Lee ``data/{source_path}/`` del contenedor con Auto Loader en modo
-  ``availableNow``: procesa todo lo nuevo y termina.
-* Escribe en append directo a la tabla bronze (``toTable``), con garantía
-  exactly-once gracias al checkpoint.
-* Checkpoint y esquema inferido en rutas fijas del Volume ``odp_system``
-  (``RuntimeConfig.checkpoint`` / ``schema_location``), nunca desde el manifiesto.
-* Columnas nuevas en origen: Auto Loader para el stream a propósito
-  (``UnknownFieldException``) tras actualizar el esquema; se relanza aquí
-  mismo hasta ``MAX_SCHEMA_RESTARTS`` veces y la tabla añade la columna
+* Reads the container's ``data/{source_path}/`` with Auto Loader in
+  ``availableNow`` mode: processes everything new and stops.
+* Appends directly to the bronze table (``toTable``), exactly-once thanks to
+  the checkpoint.
+* Checkpoint and inferred schema live at fixed paths in the ``odp_system``
+  Volume (``RuntimeConfig.checkpoint`` / ``schema_location``), never taken
+  from the manifest.
+* New columns at the source: Auto Loader stops the stream on purpose
+  (``UnknownFieldException``) after updating the schema; it is restarted here
+  up to ``MAX_SCHEMA_RESTARTS`` times and the table adds the column
   (``mergeSchema``).
 
-Bronze es el registro inmutable: se crea con ``delta.appendOnly = true``. Un
-borrado RGPD lo hace un administrador desactivando esa propiedad temporalmente.
+Bronze is the immutable record: it is created with ``delta.appendOnly = true``.
+A GDPR deletion is done by an administrator who temporarily disables that
+property.
 """
 
 from __future__ import annotations
@@ -62,8 +64,8 @@ class IngestResult:
 
 
 def bronze_select(run_partition: str) -> tuple[str, ...]:
-    # _metadata se selecciona sobre la lectura directa (columna oculta del file
-    # source) y la partición run_id=... pasa a _run_id como texto.
+    # _metadata is selected on the direct read (hidden column of the file
+    # source) and the run_id=... partition becomes _run_id as a string.
     return (
         f"* EXCEPT ({run_partition})",
         f"CAST({run_partition} AS STRING) AS {RUN_ID_COLUMN}",
@@ -86,22 +88,22 @@ def _rows_from_progress(progress) -> int:
 
 
 def build_stream(spark, cfg: RuntimeConfig, entity: RuntimeEntity):
-    """Auto Loader → append a bronze. Devuelve el DataStreamWriter listo para arrancar."""
+    """Auto Loader → append to bronze. Returns the DataStreamWriter ready to start."""
     reader = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
         .option("pathGlobFilter", "*.parquet")
-        .option("cloudFiles.partitionColumns", cfg.run_partition)   # run_id=... → columna
+        .option("cloudFiles.partitionColumns", cfg.run_partition)   # run_id=... → column
         .option("cloudFiles.schemaLocation", cfg.schema_location(entity))
         .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
     )
     if entity.schema_hints:
         reader = reader.option("cloudFiles.schemaHints", entity.schema_hints)
     if cfg.file_events:
-        # Con file events Auto Loader no lista el contenedor: lee eventos.
+        # With file events Auto Loader does not list the container: it reads events.
         reader = reader.option("cloudFiles.useManagedFileEvents", "true")
-    # Con esquema inferido, Auto Loader añade _rescued_data (datos que no
-    # encajan en el tipo): se queda en bronze y no viaja a silver.
+    # With an inferred schema Auto Loader adds _rescued_data (data that does not
+    # fit the type): it stays in bronze and does not travel to silver.
     df = reader.load(cfg.data_path(entity)).selectExpr(*bronze_select(cfg.run_partition))
     return (
         df.writeStream.option("checkpointLocation", cfg.checkpoint(entity))
@@ -119,12 +121,12 @@ def _set_bronze_properties(spark, cfg: RuntimeConfig, entity: RuntimeEntity) -> 
     }
     assignments = ", ".join(f"{sql_literal(k)} = {sql_literal(v)}" for k, v in props.items())
     spark.sql(f"ALTER TABLE {fqn} SET TBLPROPERTIES ({assignments})")
-    comment = (f"Bronze ({entity.load_type}) de {entity.source_path} — contenedor {cfg.container}. "
-               "Append de todo lo entregado por CLEX.")
+    comment = (f"Bronze ({entity.load_type}) of {entity.source_path} — container {cfg.container}. "
+               "Append-only record of everything delivered by CLEX.")
     spark.sql(f"COMMENT ON TABLE {fqn} IS {sql_literal(comment)}")
     if entity.is_full:
-        # El snapshot de silver filtra por _run_id: clustering para no leer
-        # todos los snapshots históricos.
+        # The silver snapshot filters by _run_id: clustering avoids reading
+        # every historical snapshot.
         spark.sql(f"ALTER TABLE {fqn} CLUSTER BY ({RUN_ID_COLUMN})")
 
 
@@ -140,10 +142,10 @@ def ingest_entity(spark, cfg: RuntimeConfig, entity: RuntimeEntity) -> IngestRes
             query.awaitTermination()
             rows += _rows_from_progress(query.recentProgress)
             break
-        except Exception as exc:  # noqa: BLE001 - se relanza si no es cambio de esquema
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it is a schema change
             rows += _rows_from_progress(getattr(query, "recentProgress", None))
             if is_schema_change(exc) and attempts <= MAX_SCHEMA_RESTARTS:
-                print(f"[odp-ingest] {entity.entity}: columna nueva en origen; reintento {attempts}")
+                print(f"[odp-ingest] {entity.entity}: new column at the source; retry {attempts}")
                 continue
             raise
     created = not existed and spark.catalog.tableExists(fqn)

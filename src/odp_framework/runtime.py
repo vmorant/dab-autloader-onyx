@@ -1,13 +1,13 @@
-"""Configuración de runtime de un contenedor.
+"""Runtime configuration of a container.
 
-Dos piezas:
+Two pieces:
 
-* ``RuntimeConfig`` (nivel contenedor): catálogos, esquema, raíz del landing,
-  modo de registro... La genera el deploy y viaja a las tareas del job
-  (parámetro ``config_json``) y a la pipeline de silver
+* ``RuntimeConfig`` (container level): catalogs, schema, landing root,
+  registration mode... Generated at deploy time and passed to the job tasks
+  (``config_json`` parameter) and to the silver pipeline
   (``configuration["odp.config"]``).
-* ``RuntimeEntity`` (nivel tabla): sale del registro ``odp_entities``, que la
-  tarea ``register`` construye a partir de los manifiestos de CLEX.
+* ``RuntimeEntity`` (table level): comes from the ``odp_entities`` registry,
+  which the ``register`` task builds from the CLEX manifests.
 """
 
 from __future__ import annotations
@@ -24,14 +24,14 @@ FINDINGS_TABLE = "odp_run_findings"
 REJECTED_RUNS_TABLE = "odp_rejected_runs"
 SYSTEM_VOLUME = "odp_system"
 
-# Columnas técnicas que añade bronze y que no viajan a silver.
+# Technical columns added by bronze that do not travel to silver.
 RUN_ID_COLUMN = "_run_id"
 SOURCE_FILE_COLUMN = "_source_file"
 INGESTED_AT_COLUMN = "_ingested_at"
 BRONZE_TECH_COLUMNS = (RUN_ID_COLUMN, SOURCE_FILE_COLUMN, INGESTED_AT_COLUMN)
-RESCUED_DATA_COLUMN = "_rescued_data"     # lo añade Auto Loader al inferir esquema
-# Columnas de bronze que no forman parte de la réplica en silver. DataFrame.drop
-# ignora las que no existan.
+RESCUED_DATA_COLUMN = "_rescued_data"     # added by Auto Loader when inferring the schema
+# Bronze columns that are not part of the silver replica. DataFrame.drop
+# ignores the ones that do not exist.
 NOT_IN_SILVER = (*BRONZE_TECH_COLUMNS, RESCUED_DATA_COLUMN)
 
 REGISTRATION_MODES = ("auto", "manual")
@@ -39,8 +39,8 @@ REGISTRATION_MODES = ("auto", "manual")
 
 @dataclass(frozen=True)
 class RuntimeEntity:
-    entity: str                     # tabla destino en bronze y silver (load_spec.target_table)
-    source_path: str                # {conexion}/{bbdd}/{esquema}/{tabla}
+    entity: str                     # target table in bronze and silver (load_spec.target_table)
+    source_path: str                # {connection}/{database}/{schema}/{table}
     load_type: str                  # "cdc" | "full"
     keys: tuple[str, ...]
     spec_version: int
@@ -65,12 +65,12 @@ class RuntimeConfig:
     bronze_catalog: str
     silver_catalog: str
     schema: str
-    landing_root: str               # abfss://{container}@{cuenta}.dfs.core.windows.net
+    landing_root: str               # abfss://{container}@{account}.dfs.core.windows.net
     data_dir: str = "data"
     manifests_dir: str = "_manifests"
     run_partition: str = "run_id"
     file_events: bool = False
-    registration: str = "auto"      # auto | manual (solo entran las approved_entities)
+    registration: str = "auto"      # auto | manual (only approved_entities get in)
     approved_entities: tuple[str, ...] = ()
     disabled_entities: tuple[str, ...] = ()
     pending_alert_hours: int = 24
@@ -78,10 +78,10 @@ class RuntimeConfig:
     report_lookback_days: int = 7
     contract: int = RUNTIME_CONTRACT
     framework_version: str = ""
-    # No se serializa: se rellena en runtime desde el registro.
+    # Not serialized: filled in at runtime from the registry.
     entities: tuple[RuntimeEntity, ...] = ()
 
-    # ---- rutas del landing -------------------------------------------------
+    # ---- landing paths -----------------------------------------------------
     @property
     def manifests_root(self) -> str:
         return f"{self.landing_root.rstrip('/')}/{self.manifests_dir}/"
@@ -89,7 +89,7 @@ class RuntimeConfig:
     def data_path(self, entity: RuntimeEntity) -> str:
         return f"{self.landing_root.rstrip('/')}/{self.data_dir}/{entity.source_path}/"
 
-    # ---- objetos de Unity Catalog -----------------------------------------
+    # ---- Unity Catalog objects ---------------------------------------------
     @property
     def manifest_fqn(self) -> str:
         return f"{self.bronze_catalog}.{self.schema}.{MANIFEST_TABLE}"
@@ -110,9 +110,9 @@ class RuntimeConfig:
     def rejected_runs_fqn(self) -> str:
         return f"{self.bronze_catalog}.{self.schema}.{REJECTED_RUNS_TABLE}"
 
-    # ---- checkpoints: rutas fijas por convención, nunca desde el manifiesto ---
-    # Son la identidad de cada stream de Auto Loader: si cambiaran, se releería
-    # todo el landing y se duplicaría bronze.
+    # ---- checkpoints: fixed paths by convention, never from the manifest ----
+    # They are the identity of each Auto Loader stream: if they changed, the
+    # whole landing would be read again and bronze would be duplicated.
     @property
     def system_volume_path(self) -> str:
         return f"/Volumes/{self.bronze_catalog}/{self.schema}/{SYSTEM_VOLUME}"
@@ -142,7 +142,7 @@ class RuntimeConfig:
     def with_entities(self, entities) -> "RuntimeConfig":
         return replace(self, entities=tuple(entities))
 
-    # ---- serialización (sin entidades) ------------------------------------
+    # ---- serialization (without entities) ---------------------------------
     def to_json(self) -> str:
         data = asdict(self)
         data.pop("entities")
@@ -150,19 +150,19 @@ class RuntimeConfig:
 
 
 def load_runtime_config(raw: str | None) -> RuntimeConfig:
-    """Reconstruye la configuración del contenedor desde ``odp.config``."""
+    """Rebuilds the container configuration from ``odp.config``."""
     if not raw:
         raise ValueError(
-            "La pipeline no tiene 'odp.config' en su configuración. "
-            "Se genera en el deploy del bundle; no se edita a mano."
+            "The pipeline has no 'odp.config' in its configuration. "
+            "It is generated by the bundle deploy; do not edit it by hand."
         )
     data = json.loads(raw)
     contract = data.get("contract")
     if contract != RUNTIME_CONTRACT:
         raise ValueError(
-            f"Contrato de configuración {contract!r} no soportado por esta versión "
-            f"del framework (espera {RUNTIME_CONTRACT}). Redespliega el bundle con "
-            "la misma versión de la wheel que usa la pipeline."
+            f"Configuration contract {contract!r} is not supported by this version "
+            f"of the framework (expects {RUNTIME_CONTRACT}). Redeploy the bundle with "
+            "the same wheel version the pipeline uses."
         )
     data.pop("entities", None)
     for key in ("approved_entities", "disabled_entities"):

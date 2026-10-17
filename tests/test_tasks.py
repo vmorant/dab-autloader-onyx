@@ -1,4 +1,4 @@
-"""Tareas register, ingest y report de punta a punta con un Spark de mentira."""
+"""register, ingest and report tasks end to end with a fake Spark."""
 
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ class StreamChain:
         return self
 
     def awaitTermination(self):
-        # Simula la ingesta: los manifiestos "nuevos" pasan a la tabla.
+        # Simulates ingestion: the "new" manifests land in the table.
         self.spark.tables.setdefault(self.options["table"], []).extend(self.spark.landing)
 
 
@@ -135,7 +135,7 @@ def _ts(**delta):
 
 def test_register_ingests_manifests_rebuilds_registry_and_plans_loads(cfg):
     new = Row(make_manifest(run_id=RUN, ingested_at=_ts(seconds=5)))
-    bad = Row(make_manifest(run_id="20261016T030000Z_x", target="otro.esquema.t", ingested_at=_ts(seconds=5)))
+    bad = Row(make_manifest(run_id="20261016T030000Z_x", target="other.schema.t", ingested_at=_ts(seconds=5)))
     spark = FakeSpark(landing=[new, bad])
 
     to_load, active, findings = register.run(spark, cfg, job_run_id="77", now=NOW)
@@ -151,9 +151,9 @@ def test_register_ingests_manifests_rebuilds_registry_and_plans_loads(cfg):
     (reg_write, rejected_write, find_write) = spark.writes
     assert reg_write[:3] == (cfg.registry_fqn, "overwrite", REGISTRY_SCHEMA_DDL)
     assert [r[0] for r in reg_write[3]] == ["gdwr_customers"]
-    # el inválido apunta a la carpeta de gdwr_customers: su run no llega a silver
+    # the invalid one points at the gdwr_customers folder: its run does not reach silver
     assert rejected_write[:2] == (cfg.rejected_runs_fqn, "overwrite")
-    assert rejected_write[3] == [("gdwr_customers", "20261016T030000Z_x", "INVALID_MANIFEST", "otro.esquema.t")]
+    assert rejected_write[3] == [("gdwr_customers", "20261016T030000Z_x", "INVALID_MANIFEST", "other.schema.t")]
     assert find_write[:2] == (cfg.findings_fqn, "append")
     assert find_write[3][0][1:4] == ("77", "register", "motors-sqlserver")
 
@@ -177,9 +177,9 @@ def test_register_main_publishes_task_values(cfg, monkeypatch):
 
 
 def test_register_fails_when_nothing_loads_and_there_are_errors(cfg, monkeypatch):
-    # main() usa la hora real: el manifiesto tiene que ser "nuevo" respecto a ella
+    # main() uses the real clock: the manifest has to be "new" relative to it
     just_now = (datetime.now(timezone.utc) + timedelta(minutes=1)).replace(tzinfo=None)
-    bad = Row(make_manifest(target="otro.esquema.t", ingested_at=just_now))
+    bad = Row(make_manifest(target="other.schema.t", ingested_at=just_now))
     monkeypatch.setattr(register, "get_spark", lambda: FakeSpark(landing=[bad]))
     monkeypatch.setattr(register, "set_task_value", lambda k, v: None)
     assert register.main([f"--config_json={cfg.to_json()}"]) == 1
@@ -213,7 +213,7 @@ def test_ingest_task_logs_failure_and_reraises(cfg, monkeypatch):
     spark = FakeSpark(tables={cfg.registry_fqn: _registry_table(cfg)})
 
     def boom(*a):
-        raise RuntimeError("sin permisos en la external location")
+        raise RuntimeError("no permissions on the external location")
 
     monkeypatch.setattr(ingest, "ingest_entity", boom)
     with pytest.raises(RuntimeError):
@@ -224,7 +224,7 @@ def test_ingest_task_logs_failure_and_reraises(cfg, monkeypatch):
 
 def test_ingest_task_rejects_tables_not_active(cfg):
     spark = FakeSpark(tables={cfg.registry_fqn: _registry_table(cfg)})
-    with pytest.raises(ValueError, match="no está ACTIVE"):
+    with pytest.raises(ValueError, match="is not ACTIVE"):
         ingest.run(spark, cfg, "gdwr_otra", now=NOW)
 
 
@@ -272,15 +272,15 @@ def test_report_fails_on_register_errors_of_the_same_run(cfg, tmp_path, monkeypa
         cfg.registry_fqn: _registry_table(cfg),
         cfg.manifest_fqn: [_manifest_row(rows=100)],
         f"{cfg.bronze_catalog}.{cfg.schema}.gdwr_customers": [Row(_run_id=RUN, count=100)],
-        cfg.findings_fqn: [Row(code="SPEC_CONFLICT")],          # error de register en este run
+        cfg.findings_fqn: [Row(code="SPEC_CONFLICT")],          # register error in this run
     })
     monkeypatch.setattr(report, "get_spark", lambda: spark)
     config_file = tmp_path / "odp.config.json"
     config_file.write_text(cfg.to_json())
 
     assert report.main([f"--config_file={config_file}", "--job_run_id=9"]) == 1
-    assert "+1 errores en register" in capsys.readouterr().out
-    assert report.main([f"--config_json={cfg.to_json()}"]) == 0          # sin job_run_id no mira register
+    assert "+1 errors in register" in capsys.readouterr().out
+    assert report.main([f"--config_json={cfg.to_json()}"]) == 0          # without job_run_id it does not look at register
     assert report.main([f"--config_file={config_file}", "--job_run_id=9", "--fail_on_error=false"]) == 0
 
 

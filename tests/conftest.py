@@ -1,4 +1,4 @@
-"""Dobles de prueba para Spark y para el módulo SDP (``pyspark.pipelines``)."""
+"""Test doubles for Spark and for the SDP module (``pyspark.pipelines``)."""
 
 from __future__ import annotations
 
@@ -26,11 +26,11 @@ def settings() -> DeploySettings:
     )
 
 
-# ------------------------------------------------------------- constructores --
+# ---------------------------------------------------------------- builders --
 def make_manifest(target="gdwr_customers", source_path="srv-motors-01/GDWR/dbo/customers",
                   run_id="20261016T020000Z_8f3a1c2d", load_type="cdc", row_count=100,
                   ingested_at=None, **spec_over):
-    """Manifiesto del contrato 2.0 (como llega de la tabla odp_manifests)."""
+    """Contract 2.0 manifest (as it comes from the odp_manifests table)."""
     spec = {
         "target_table": target,
         "source_path": source_path,

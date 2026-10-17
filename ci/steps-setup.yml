@@ -1,4 +1,4 @@
-# Pasos comunes: Python, uv, entorno del repo (.venv con databricks-bundles) y CLI de Databricks.
+# Common steps: Python, uv, repo environment (.venv with databricks-bundles) and the Databricks CLI.
 steps:
   - task: UsePythonVersion@0
     inputs:
@@ -8,7 +8,7 @@ steps:
       set -euo pipefail
       python -m pip install --quiet "uv==$(UV_VERSION)"
       uv sync --frozen
-    displayName: uv sync (.venv del bundle)
+    displayName: uv sync (bundle .venv)
 
   - script: |
       set -euo pipefail

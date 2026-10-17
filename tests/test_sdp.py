@@ -1,4 +1,4 @@
-"""Pipeline de silver (SDP) con dobles de prueba (sin Spark ni Databricks)."""
+"""Silver pipeline (SDP) with test doubles (no Spark, no Databricks)."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def specs(settings):
 
 @pytest.fixture
 def motors(specs):
-    # Entidades tal y como las devuelve el registro (origen: manifiestos de CLEX)
+    # Entities as returned by the registry (origin: CLEX manifests)
     return specs["motors-sqlserver"].runtime.with_entities([CUSTOMERS, POLICIES])
 
 
@@ -98,7 +98,7 @@ def test_snapshot_source_applies_complete_runs_in_order(fake_spark, motors):
     ])
     source = make_snapshot_source(fake_spark, motors, POLICIES, loader)
 
-    # en marcha (último aplicado R1): el siguiente en orden
+    # running flow (last applied R1): the next one in order
     df, version = source(run_version(R1))
     assert version == run_version(R2)
     assert ("where", f"_run_id = '{R2}'") in df.ops
@@ -108,7 +108,7 @@ def test_snapshot_source_applies_complete_runs_in_order(fake_spark, motors):
 
 
 def test_snapshot_source_starts_from_the_newest_complete_run(fake_spark, motors):
-    # primera actualización o full refresh: no repasa el histórico de bronze
+    # first update or full refresh: does not replay the bronze history
     loader = FakeLoader(runs=[RunState(R1, run_version(R1), 10, 10), RunState(R2, run_version(R2), 12, 12)])
     df, version = make_snapshot_source(fake_spark, motors, POLICIES, loader)(None)
     assert version == run_version(R2) and ("where", f"_run_id = '{R2}'") in df.ops
@@ -157,7 +157,7 @@ def test_spark_loader_filters_manifests_by_registered_spec(motors):
     assert "load_spec.target_table = 'gdwr_policies'" in cond
     assert f"load_spec.source_path = '{POLICIES.source_path}'" in cond
     assert queries[motors.bronze_fqn(POLICIES)].conditions == [f"_run_id IN ('{R1}')"]
-    # un run rechazado por register nunca es candidato
+    # a run rejected by register is never a candidate
     rejected = SparkRunStateLoader(spark, motors, {"gdwr_policies": frozenset({R1})})
     assert rejected.run_states(POLICIES, None) == []
 

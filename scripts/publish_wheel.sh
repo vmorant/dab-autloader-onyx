@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Construye la wheel de odp_framework y la publica, inmutable, en el Volume de
-# librerías del entorno. Lo ejecuta el CI tras pasar los tests (y se puede
-# lanzar a mano en dev).
+# Builds the odp_framework wheel and publishes it, immutable, to the environment's
+# libraries Volume. The CI runs it after the tests pass (it can also be run by
+# hand in dev).
 #
 #   scripts/publish_wheel.sh <env> [profile]
 #
-# Las versiones no se sobrescriben nunca:
-#   - si la versión ya está publicada con el mismo contenido, no hace nada
-#     (el CI puede repetirse);
-#   - si está publicada con OTRO contenido, falla: hay que subir la versión en
-#     pyproject.toml y src/odp_framework/__init__.py, y cambiar framework_wheel
-#     en databricks.yml (PR) para cada target.
+# Versions are never overwritten:
+#   - if the version is already published with the same content, it does nothing
+#     (the CI can be re-run);
+#   - if it is published with DIFFERENT content, it fails: bump the version in
+#     pyproject.toml and src/odp_framework/__init__.py, and change framework_wheel
+#     in databricks.yml (PR) for each target.
 set -euo pipefail
 
-ENV="${1:?uso: publish_wheel.sh <dev|pre|pro> [profile]}"
+ENV="${1:?usage: publish_wheel.sh <dev|pre|pro> [profile]}"
 PROFILE_ARGS=()
 [[ -n "${2:-}" ]] && PROFILE_ARGS=(--profile "$2")
 
 VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
 INIT_VERSION=$(python3 -c "import re;print(re.search(r'__version__ = \"(.+?)\"', open('src/odp_framework/__init__.py').read()).group(1))")
 if [[ "$VERSION" != "$INIT_VERSION" ]]; then
-  echo "pyproject ($VERSION) y __init__ ($INIT_VERSION) no coinciden" >&2
+  echo "pyproject ($VERSION) and __init__ ($INIT_VERSION) do not match" >&2
   exit 1
 fi
 
@@ -29,8 +29,8 @@ TARGET="dbfs:/Volumes/odp_platform_${ENV}/libs/wheels/${WHEEL}"
 
 rm -rf dist && uv build --wheel
 
-# Compara el RECORD de las dos wheels (hash de cada fichero): no depende de las
-# fechas internas del zip.
+# Compares the RECORD of both wheels (hash of each file): it does not depend on
+# the timestamps inside the zip.
 record() {
   python3 - "$1" <<'EOF'
 import sys, zipfile
@@ -45,11 +45,11 @@ if databricks fs ls "$TARGET" "${PROFILE_ARGS[@]}" >/dev/null 2>&1; then
   trap 'rm -rf "$TMP"' EXIT
   databricks fs cp "$TARGET" "$TMP/$WHEEL" "${PROFILE_ARGS[@]}" >/dev/null
   if [[ "$(record "$TMP/$WHEEL")" == "$(record "dist/$WHEEL")" ]]; then
-    echo "La versión ${VERSION} ya está publicada en ${TARGET} con el mismo contenido: nada que hacer."
+    echo "Version ${VERSION} is already published at ${TARGET} with the same content: nothing to do."
     exit 0
   fi
-  echo "La versión ${VERSION} ya existe en ${TARGET} con OTRO contenido: sube la versión." >&2
+  echo "Version ${VERSION} already exists at ${TARGET} with DIFFERENT content: bump the version." >&2
   exit 1
 fi
 databricks fs cp "dist/${WHEEL}" "$TARGET" "${PROFILE_ARGS[@]}"
-echo "Publicada ${TARGET}"
+echo "Published ${TARGET}"

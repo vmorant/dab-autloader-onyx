@@ -106,7 +106,7 @@ def test_job_shape(settings):
     (cluster,) = job["job_clusters"]
     assert cluster["new_cluster"]["autoscale"] == {"min_workers": 1, "max_workers": 4}
     assert cluster["new_cluster"]["policy_id"] == "POLICY-JOB"
-    assert job["email_notifications"] == {"on_failure": ["equipo@example.com"]}
+    assert job["email_notifications"] == {"on_failure": ["team@example.com"]}
 
 
 def test_e2e_container_uses_a_landing_subtree_per_deployment(settings):

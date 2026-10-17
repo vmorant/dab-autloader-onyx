@@ -22,7 +22,7 @@ def settings() -> DeploySettings:
         framework_wheel="/Volumes/odp_platform_dev/libs/wheels/odp_framework-0.4.0-py3-none-any.whl",
         pipeline_policy_id="POLICY-PIPE",
         job_policy_id="POLICY-JOB",
-        notification_emails=("equipo@example.com",),
+        notification_emails=("team@example.com",),
     )
 
 

@@ -1,22 +1,22 @@
-"""Capa silver: consolidación SCD1 = réplica de la tabla de origen.
+"""Silver layer: SCD1 consolidation = replica of the source table.
 
-* CDC  → ``create_auto_cdc_flow`` sobre el stream de bronze: aplica I/U/D en
-  orden de secuencia (gestiona eventos desordenados y deletes).
-* Full → ``create_auto_cdc_from_snapshot_flow``: compara el snapshot nuevo con
-  el anterior y deduce inserts, updates y deletes. Solo se aplican runs
-  completos (ver ``odp_framework.snapshot``).
+* CDC  → ``create_auto_cdc_flow`` over the bronze stream: applies I/U/D in
+  sequence order (handles out-of-order events and deletes).
+* Full → ``create_auto_cdc_from_snapshot_flow``: compares the new snapshot with
+  the previous one and derives inserts, updates and deletes. Only complete runs
+  are applied (see ``odp_framework.snapshot``).
 
-Bronze lo escribe la tarea ``ingest`` del job (Auto Loader, sin SDP); esta
-pipeline solo consolida. Una tabla del registro cuya bronze aún no existe (su
-primera carga falló) se omite hasta que exista.
+Bronze is written by the job's ``ingest`` task (Auto Loader, no SDP); this
+pipeline only consolidates. A registry table whose bronze table does not exist
+yet (its first load failed) is skipped until it exists.
 
-Runs rechazados (``odp_rejected_runs``, los calcula ``register``): sus filas
-están en bronze, porque Auto Loader lee la carpeta entera de la tabla, pero
-silver no las aplica. Si un run se rechaza después de haberse aplicado (sus
-parquet llegaron antes que su manifiesto), el arreglo es un full refresh de esa
-tabla: silver se reconstruye desde bronze con el filtro ya en vigor.
+Rejected runs (``odp_rejected_runs``, computed by ``register``): their rows are
+in bronze, because Auto Loader reads the table's whole folder, but silver does
+not apply them. If a run is rejected after it was applied (its parquet files
+arrived before its manifest), the fix is a full refresh of that table: silver
+is rebuilt from bronze with the filter already in place.
 
-Silver se puede reconstruir siempre desde bronze (full refresh permitido).
+Silver can always be rebuilt from bronze (full refresh allowed).
 """
 
 from __future__ import annotations
@@ -33,15 +33,15 @@ SILVER_TABLE_PROPERTIES = {
     "odp.layer": "silver",
 }
 
-# Cuánto recuerda AUTO CDC un delete (tombstone). Un evento más antiguo que el
-# delete que llegue después de este plazo resucitaría la fila. El valor por
-# defecto son 2 días; 7 cubre reintentos de CLEX y cargas fallidas recuperadas
-# en la semana. Una reconstrucción desde bronze (full refresh) no depende de él.
+# How long AUTO CDC remembers a delete (tombstone). An event older than the
+# delete that arrives after this period would bring the row back. The default
+# is 2 days; 7 covers CLEX retries and failed loads recovered within the week.
+# A rebuild from bronze (full refresh) does not depend on it.
 CDC_TOMBSTONE_RETENTION_SECONDS = 7 * 24 * 3600
 
 
 class RunStateLoader(Protocol):
-    """Acceso a manifiestos y bronze. Se inyecta para poder probar sin Spark."""
+    """Access to manifests and bronze. Injected so it can be tested without Spark."""
 
     def silver_exists(self, entity: RuntimeEntity) -> bool: ...
 
@@ -65,7 +65,7 @@ class SparkRunStateLoader:
     def run_states(self, entity: RuntimeEntity, latest_version: int | None) -> list[RunState]:
         if not self.spark.catalog.tableExists(self.cfg.manifest_fqn):
             return []
-        # Solo los runs de esta tabla con la misma especificación registrada.
+        # Only the runs of this table with the same registered specification.
         manifest_rows = (
             self.spark.read.table(self.cfg.manifest_fqn)
             .where(
@@ -87,7 +87,7 @@ class SparkRunStateLoader:
         if not self.spark.catalog.tableExists(self.cfg.bronze_fqn(entity)):
             counts: dict[str, int] = {}
         else:
-            # run_id ya validado por patrón en candidate_run_ids → literales seguros
+            # run_id already validated by pattern in candidate_run_ids → safe literals
             in_list = ", ".join(sql_literal(r) for r in candidates)
             counts = {
                 r[RUN_ID_COLUMN]: r["count"]
@@ -108,13 +108,13 @@ class SparkRunStateLoader:
 
 def register_silver(spark, dp, cfg: RuntimeConfig, loader: RunStateLoader | None = None,
                     rejected: Mapping[str, frozenset[str]] | None = None) -> dict:
-    """Declara la réplica SCD1 de cada entidad activa.
+    """Declares the SCD1 replica of each active entity.
 
-    ``rejected``: ``{tabla: run_ids}`` que no se aplican (``load_rejected_runs``).
+    ``rejected``: ``{table: run_ids}`` that are not applied (``load_rejected_runs``).
 
-    Devuelve ``{"declared": [...], "skipped": [...]}``. Una entidad full sin
-    ningún snapshot completo todavía se omite en esta actualización: el primer
-    snapshot de un flow nunca puede ser ``None`` (fallaría toda la pipeline).
+    Returns ``{"declared": [...], "skipped": [...]}``. A full entity without any
+    complete snapshot yet is skipped in this update: the first snapshot of a
+    flow can never be ``None`` (it would fail the whole pipeline).
     """
     rejected = rejected or {}
     loader = loader or SparkRunStateLoader(spark, cfg, rejected)
@@ -123,7 +123,7 @@ def register_silver(spark, dp, cfg: RuntimeConfig, loader: RunStateLoader | None
     for entity in cfg.entities:
         if not loader.bronze_exists(entity):
             skipped.append(entity.entity)
-            print(f"[odp] {entity.entity}: todavía no hay tabla bronze; se declara tras su primera carga.")
+            print(f"[odp] {entity.entity}: no bronze table yet; declared after its first load.")
         elif entity.is_cdc:
             _register_cdc(spark, dp, cfg, entity, rejected.get(entity.entity, frozenset()))
             declared.append(entity.entity)
@@ -132,7 +132,7 @@ def register_silver(spark, dp, cfg: RuntimeConfig, loader: RunStateLoader | None
             declared.append(entity.entity)
         else:
             skipped.append(entity.entity)
-            print(f"[odp] {entity.entity}: sin snapshot completo todavía; se declara cuando llegue.")
+            print(f"[odp] {entity.entity}: no complete snapshot yet; declared when one arrives.")
     return {"declared": declared, "skipped": skipped}
 
 
@@ -145,7 +145,7 @@ def _full_entity_ready(loader: RunStateLoader, entity: RuntimeEntity) -> bool:
 def _sequence_by(entity: RuntimeEntity):
     if len(entity.sequence_by) == 1:
         return entity.sequence_by[0]
-    from pyspark.sql import functions as F  # solo en Databricks
+    from pyspark.sql import functions as F  # only on Databricks
 
     return F.struct(*entity.sequence_by)
 
@@ -158,8 +158,8 @@ def _create_target(dp, cfg: RuntimeConfig, entity: RuntimeEntity) -> None:
     dp.create_streaming_table(
         name=entity.entity,
         comment=(
-            f"Réplica SCD1 de {entity.source_path} ({entity.load_type}) — contenedor "
-            f"{cfg.container}. Consolidada desde {cfg.bronze_fqn(entity)}."
+            f"SCD1 replica of {entity.source_path} ({entity.load_type}) — container "
+            f"{cfg.container}. Consolidated from {cfg.bronze_fqn(entity)}."
         ),
         table_properties={
             **SILVER_TABLE_PROPERTIES,
@@ -171,7 +171,7 @@ def _create_target(dp, cfg: RuntimeConfig, entity: RuntimeEntity) -> None:
 
 
 def exclude_runs_condition(run_ids) -> str | None:
-    """Filtro que deja fuera los runs rechazados (conserva filas sin ``_run_id``)."""
+    """Filter that excludes rejected runs (keeps rows without ``_run_id``)."""
     if not run_ids:
         return None
     in_list = ", ".join(sql_literal(r) for r in sorted(run_ids))
@@ -187,12 +187,12 @@ def _register_cdc(spark, dp, cfg: RuntimeConfig, entity: RuntimeEntity,
 
     @dp.temporary_view(name=view_name)
     def cdc_changes():
-        # skipChangeCommits: un borrado RGPD en bronze no rompe el stream.
+        # skipChangeCommits: a GDPR deletion in bronze does not break the stream.
         df = spark.readStream.option("skipChangeCommits", "true").table(bronze)
         if exclude:
-            # Filtro sin estado: cambiarlo entre actualizaciones no invalida el checkpoint.
+            # Stateless filter: changing it between updates does not invalidate the checkpoint.
             df = df.where(exclude)
-        # Las columnas técnicas de bronze no forman parte de la réplica.
+        # Bronze technical columns are not part of the replica.
         return df.drop(*NOT_IN_SILVER)
 
     dp.create_auto_cdc_flow(
@@ -201,7 +201,7 @@ def _register_cdc(spark, dp, cfg: RuntimeConfig, entity: RuntimeEntity,
         keys=list(entity.keys),
         sequence_by=_sequence_by(entity),
         apply_as_deletes=in_condition(entity.operation_column, entity.delete_values),
-        # _op solo decide la operación; la secuencia (_seq) se conserva
+        # _op only decides the operation; the sequence (_seq) is kept
         except_column_list=[entity.operation_column],
         stored_as_scd_type=1,
         name=f"cdc_{entity.entity}",
@@ -216,7 +216,7 @@ def make_snapshot_source(spark, cfg: RuntimeConfig, entity: RuntimeEntity, loade
         nxt = select_next_run(runs, latest_version, entity.allow_empty_snapshot)
         if nxt is None:
             return None
-        print(f"[odp] {entity.entity}: aplicando snapshot {nxt.run_id} ({nxt.bronze_rows} filas)")
+        print(f"[odp] {entity.entity}: applying snapshot {nxt.run_id} ({nxt.bronze_rows} rows)")
         df = (
             spark.read.table(bronze)
             .where(f"{RUN_ID_COLUMN} = {sql_literal(nxt.run_id)}")

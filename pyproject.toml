@@ -1,22 +1,22 @@
 [project]
 name = "odp_framework"
 version = "0.4.0"
-description = "ONYX Data Platform: ingesta CLEX → bronze (Auto Loader) → silver (SDP AUTO CDC), con DABs"
-# Sin readme: la wheel solo cambia cuando cambia el código (publish_wheel.sh compara contenidos).
+description = "ONYX Data Platform: CLEX ingestion → bronze (Auto Loader) → silver (SDP AUTO CDC), with DABs"
+# No readme: the wheel only changes when the code changes (publish_wheel.sh compares contents).
 requires-python = ">=3.10"
-# Runtime: nada fuera de Databricks Runtime (pyspark y databricks-sdk ya vienen).
+# Runtime: nothing beyond Databricks Runtime (pyspark and databricks-sdk are already there).
 dependencies = []
 
 [project.scripts]
-# Entry points de las tareas wheel del job (python_wheel_task).
+# Entry points of the job's wheel tasks (python_wheel_task).
 odp-register = "odp_framework.tasks.register:entrypoint"
 odp-ingest = "odp_framework.tasks.ingest:entrypoint"
 odp-report = "odp_framework.tasks.report:entrypoint"
 odp-e2e = "odp_framework.tasks.e2e:entrypoint"
 
 [dependency-groups]
-# Solo para el deploy (generador Python DABs) y los tests.
-# Mantener databricks-bundles alineado con la versión del CLI.
+# Only for the deploy (Python DABs generator) and the tests.
+# Keep databricks-bundles aligned with the CLI version.
 dev = [
     "databricks-bundles==1.21.0",
     "pyyaml>=6.0",

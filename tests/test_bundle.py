@@ -1,4 +1,4 @@
-"""Generador del bundle: planes y validación contra los modelos de databricks-bundles."""
+"""Bundle generator: plans and validation against the databricks-bundles models."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def test_one_job_and_one_silver_pipeline_per_container(settings):
     assert set(plan.pipelines) == {"silver_motors_sqlserver", "silver_home_sqlserver", "silver_motors_oracle",
                                    "silver_e2e_selftest"}
     assert plan.schemas == {} and plan.volumes == {}
-    # readers sin manage_schemas: aviso de que los grants van fuera del bundle
+    # readers without manage_schemas: warning that the grants go outside the bundle
     assert all("readers" in w for w in plan.warnings) and len(plan.warnings) == 2
 
 
@@ -62,7 +62,7 @@ def test_e2e_job_shape(settings):
     assert (params["action"], params["step"]) == ("check", "3")
     assert params["e2e_id"] == "{{job.run_id}}" and params["start_ms"] == "{{job.start_time.timestamp_ms}}"
     assert tasks["cleanup"]["depends_on"] == [{"task_key": "check_3"}] and "run_if" not in tasks["cleanup"]
-    # el contenedor e2e no hace fallar su job de ingesta: los errores los verifica el e2e
+    # the e2e container does not fail its ingest job: the e2e job checks the errors
     ingest_params = _tasks(plan.jobs["ingest_e2e_selftest"])["report"]["python_wheel_task"]["named_parameters"]
     assert ingest_params["fail_on_error"] == "false"
 
@@ -119,7 +119,7 @@ def test_e2e_container_uses_a_landing_subtree_per_deployment(settings):
     e2e_cfg = load_runtime_config(_tasks(plan.jobs["e2e_e2e_selftest"])["publish_1"]
                                   ["python_wheel_task"]["named_parameters"]["config_json"])
     assert e2e_cfg == cfg
-    # los contenedores reales no cambian
+    # real containers do not change
     real = load_runtime_config(_tasks(plan.jobs["ingest_motors_sqlserver"])["register"]
                                ["python_wheel_task"]["named_parameters"]["config_json"])
     assert (real.data_dir, real.manifests_dir) == ("data", "_manifests")
@@ -153,7 +153,7 @@ def test_silver_pipeline_shape(settings):
     assert silver["libraries"] == [{"file": {"path": "src/pipelines/silver.py"}}]
     assert silver["environment"] == {"dependencies": [settings.framework_wheel]}
     cfg = load_runtime_config(silver["configuration"]["odp.config"])
-    assert cfg.container == "motors-sqlserver" and cfg.entities == ()   # tablas: del registro
+    assert cfg.container == "motors-sqlserver" and cfg.entities == ()   # tables: from the registry
 
 
 def test_managed_schemas_and_system_volume(settings):
@@ -168,7 +168,7 @@ def test_managed_schemas_and_system_volume(settings):
     assert vol["name"] == "odp_system" and vol["volume_type"] == "MANAGED"
     assert plan.pipelines["silver_motors_sqlserver"]["schema"] == \
         "${resources.schemas.silver_schema_motors_sqlserver.name}"
-    # mode: development prefija los esquemas: el runtime usa el nombre desplegado
+    # mode: development prefixes the schemas: the runtime uses the deployed name
     ref = "${resources.schemas.bronze_schema_motors_sqlserver.name}"
     odp_config = load_runtime_config(plan.pipelines["silver_motors_sqlserver"]["configuration"]["odp.config"])
     assert odp_config.schema == ref
@@ -190,10 +190,10 @@ def test_run_as_sp_gets_write_grants_on_what_the_deploy_sp_creates(settings):
 
 def test_wheel_version_mismatch_warns(settings):
     plan = build_plan(CONFIG_DIR, replace(settings, framework_wheel="/Volumes/x/odp_framework-0.0.9-py3-none-any.whl"))
-    assert any("no es la versión del generador" in w for w in plan.warnings)
+    assert any("is not the generator version" in w for w in plan.warnings)
 
 
-# ------------------------------------------- contra databricks-bundles real --
+# ---------------------------------------- against the real databricks-bundles --
 bundles = pytest.importorskip("databricks.bundles.core")
 
 
@@ -233,7 +233,7 @@ def test_load_resources_builds_typed_resources():
     assert for_each["task"]["python_wheel_task"]["entry_point"] == "odp-ingest"
     pipeline = res.pipelines["silver_motors_sqlserver"].as_dict()
     assert pipeline["environment"]["dependencies"][0].endswith("odp_framework-0.4.0-py3-none-any.whl")
-    assert "policy_id" not in pipeline["clusters"][0]          # dev sin policy
+    assert "policy_id" not in pipeline["clusters"][0]          # dev without a policy
 
 
 def test_load_resources_reports_config_errors_as_diagnostics():

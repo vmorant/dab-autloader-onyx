@@ -20,9 +20,9 @@ def test_samples_follow_contract():
     ("manifest", "expected"),
     [
         (make_manifest(run_id="2026-10-16_x"), "run_id"),
-        (make_manifest(target="otro_catalogo.esquema.tabla"), "target_table"),
+        (make_manifest(target="other_catalog.schema.table"), "target_table"),
         (make_manifest(target="Customers"), "target_table"),
-        (make_manifest(source_path="srv/../../otro-contenedor/t"), "source_path"),
+        (make_manifest(source_path="srv/../../other-container/t"), "source_path"),
         (make_manifest(source_path="/srv/GDWR/dbo/t"), "source_path"),
         (make_manifest(keys=[]), "keys"),
         (make_manifest(keys=["customer id"]), "keys"),
@@ -30,8 +30,8 @@ def test_samples_follow_contract():
         (make_manifest(load_type="delta"), "load_type"),
         (make_manifest(cdc={"sequence_by": [], "operation_column": "_op", "delete_values": ["D"]}), "sequence_by"),
         (make_manifest(cdc={"sequence_by": ["_seq"], "operation_column": "customer_id",
-                            "delete_values": ["D"]}), "no pueden ser keys"),
-        ({**make_manifest(), "data_path": "data/otra/ruta/"}, "data_path"),
+                            "delete_values": ["D"]}), "cannot be keys"),
+        ({**make_manifest(), "data_path": "data/other/path/"}, "data_path"),
         ({**make_manifest(), "seq_max": None}, "seq_max"),
         ({**make_manifest(), "row_count": -1}, "row_count"),
         ({**make_manifest(), "contract_version": "1.0"}, "contract_version"),
@@ -66,16 +66,16 @@ R3 = "20261016T020000Z_c"
 
 def test_select_next_run_in_version_order():
     runs = [_run(R2, 10, 10), _run(R1, 10, 10), _run(R3, 10, 10)]
-    assert select_next_run(runs, None).run_id == R3            # de cero: el más reciente completo
-    assert select_next_run(runs, run_version(R1)).run_id == R2  # en marcha: en orden
+    assert select_next_run(runs, None).run_id == R3            # from scratch: the most recent complete one
+    assert select_next_run(runs, run_version(R1)).run_id == R2  # running: in order
     assert select_next_run(runs, run_version(R3)) is None
 
 
 def test_incomplete_runs_are_not_applied_and_are_superseded():
-    runs = [_run(R1, 10, 7), _run(R2, 10, 10)]          # R1 a medias
-    assert select_next_run(runs, None).run_id == R2       # el full nuevo sustituye
+    runs = [_run(R1, 10, 7), _run(R2, 10, 10)]          # R1 half-loaded
+    assert select_next_run(runs, None).run_id == R2       # the new full replaces it
     assert select_next_run([_run(R1, 10, 7)], None) is None
-    assert select_next_run([_run(R1, None, 10)], None) is None  # sin manifiesto
+    assert select_next_run([_run(R1, None, 10)], None) is None  # no manifest
 
 
 def test_empty_snapshot_needs_explicit_permission():
@@ -87,6 +87,6 @@ def test_empty_snapshot_needs_explicit_permission():
 
 
 def test_candidate_run_ids_filters_invalid_and_old():
-    manifests = [(R1, 5), (R2, 6), ("malo", 1), (R3, None)]
+    manifests = [(R1, 5), (R2, 6), ("bad", 1), (R3, None)]
     out = candidate_run_ids(manifests, run_version(R1))
     assert out == {R2: (run_version(R2), 6), R3: (run_version(R3), None)}

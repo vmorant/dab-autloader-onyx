@@ -1,13 +1,13 @@
-"""Tarea ``report`` del job (python_wheel_task, entry point ``odp-report``).
+"""``report`` task of the job (python_wheel_task, entry point ``odp-report``).
 
-Se ejecuta siempre al final (``run_if: ALL_DONE``):
+Always runs at the end (``run_if: ALL_DONE``):
 
-1. Recibe la configuración del contenedor (``config_json``) y lee las tablas
-   activas del registro.
-2. Cruza los manifiestos recientes con las filas cargadas en bronze por run.
-3. Guarda los hallazgos en ``odp_run_findings`` y falla el job si hay errores
-   propios o de la tarea ``register`` de esta misma ejecución (dispara las
-   notificaciones).
+1. Receives the container configuration (``config_json``) and reads the active
+   tables from the registry.
+2. Reconciles the recent manifests with the rows loaded into bronze per run.
+3. Stores the findings in ``odp_run_findings`` and fails the job if there are
+   errors of its own or from the ``register`` task of the same run (this
+   triggers the notifications).
 """
 
 from __future__ import annotations
@@ -108,17 +108,17 @@ def main(argv: list[str] | None = None) -> int:
 
     errors = [f for f in findings if f.severity == ERROR]
     warnings = [f for f in findings if f.severity == WARN]
-    print(f"[odp-report] {cfg.container}: {len(errors)} errores, {len(warnings)} avisos "
-          f"(+{register_errors} errores en register)")
+    print(f"[odp-report] {cfg.container}: {len(errors)} errors, {len(warnings)} warnings "
+          f"(+{register_errors} errors in register)")
     for f in findings:
         if f.severity in (ERROR, WARN):
             print(f"  {f.severity:5} {f.code:20} {f.entity or '-'} {f.run_id or '-'}: {f.detail}")
 
     if (has_errors(findings) or register_errors) and args.fail_on_error.lower() == "true":
-        print(f"[odp-report] Detalle en {cfg.findings_fqn}")
+        print(f"[odp-report] Details in {cfg.findings_fqn}")
         return 1
     return 0
 
 
-def entrypoint() -> None:  # pragma: no cover - usado por python_wheel_task
+def entrypoint() -> None:  # pragma: no cover - used by python_wheel_task
     exit_with(main(), "odp-report")

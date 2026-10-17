@@ -42,8 +42,8 @@ def test_clean_delivery_has_no_findings(cfg):
 
 
 def test_manifests_outside_the_registry_are_left_to_register(cfg):
-    # no activa, con otra ruta (conflicto) o con otro tipo de carga: ya lo avisa register
-    manifests = [_m(entity="gdwr_nueva"), _m(source_path="otra/ruta"), _m(load_type="full")]
+    # not active, another path (conflict) or another load type: register already reports it
+    manifests = [_m(entity="gdwr_new"), _m(source_path="other/path"), _m(load_type="full")]
     assert evaluate(cfg, manifests, {}, NOW) == []
 
 
@@ -71,6 +71,6 @@ def test_duplicate_versions(cfg):
 
 
 def test_rejected_runs_are_left_to_register(cfg):
-    # SPEC_CONFLICT con la misma ruta: register ya lo avisa y silver no lo aplica
+    # SPEC_CONFLICT with the same path: register already reports it and silver does not apply it
     findings = evaluate(cfg, [_m()], {}, NOW, rejected={"gdwr_customers": frozenset({RUN})})
     assert findings == []

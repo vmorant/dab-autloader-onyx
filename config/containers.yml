@@ -1,58 +1,58 @@
-# Contenedores del landing de este equipo: UNA ENTRADA = UN JOB.
+# Landing containers of this team: ONE ENTRY = ONE JOB.
 #
-# Dar de alta un contenedor nuevo (un custodian × una instancia de CLEX):
-#   1. Añade una entrada aquí (PR aprobado por plataforma + custodian).
-#   2. Al desplegar se crean su job, su pipeline de silver, sus esquemas
-#      bronze/silver y su Volume odp_system. La ruta del landing sale del naming:
+# Onboarding a new container (one custodian × one CLEX instance):
+#   1. Add an entry here (PR approved by platform + custodian).
+#   2. The deploy creates its job, its silver pipeline, its bronze/silver
+#      schemas and its odp_system Volume. The landing path comes from the naming:
 #      abfss://{container}@{storage_account}.dfs.core.windows.net
-#   3. Las tablas NO se listan: llegan solas con los manifiestos de CLEX.
+#   3. Tables are NOT listed: they arrive on their own with the CLEX manifests.
 #
-# Campos:
-#   container          nombre del contenedor en el storage de landing (obligatorio)
-#   custodian          data custodian responsable (obligatorio)
+# Fields:
+#   container          container name in the landing storage (required)
+#   custodian          responsible data custodian (required)
 #   description, data_class
-#   environments       [dev, pre, pro] — alta progresiva; sin el campo, en todos
-#   storage_account    solo si el contenedor está en otra cuenta que la del target
-#   readers            grupos Entra con lectura en sus esquemas (con manage_schemas)
-#   registration       auto (por defecto) | manual (solo approved_entities)
+#   environments       [dev, pre, pro] — progressive rollout; without the field, all of them
+#   storage_account    only if the container lives in another account than the target's
+#   readers            Entra groups with read access on its schemas (with manage_schemas)
+#   registration       auto (default) | manual (only approved_entities)
 #   approved_entities, disabled_entities
-#   active             false = pausa: sin job; esquemas, Volume, pipeline y datos se
-#                      conservan. Borrar la entrada es la baja definitiva (borra la
-#                      pipeline y sus tablas de silver; el deploy pide confirmación)
-#   e2e                true = además un job e2e que simula a CLEX (solo dev/pre;
-#                      contenedor dedicado, ver docs/PRUEBAS_Y_OPERACION.md)
-#   ingest / pipelines / trigger / report   overrides de platform.yml
+#   active             false = pause: no job; schemas, Volume, pipeline and data are
+#                      kept. Deleting the entry is the final removal (it deletes the
+#                      pipeline and its silver tables; the deploy asks for confirmation)
+#   e2e                true = also an e2e job that simulates CLEX (dev/pre only;
+#                      dedicated container, see docs/TESTING_AND_OPERATIONS.md)
+#   ingest / pipelines / trigger / report   overrides of platform.yml
 
 containers:
   - container: motors-sqlserver
     custodian: motors
-    description: Sistemas de Motors en SQL Server (CLEX conector sqlserver)
+    description: Motors systems on SQL Server (CLEX sqlserver connector)
     data_class: confidential
     readers: [grp-datateam01-motors-dbx-reader]
 
   - container: home-sqlserver
     custodian: home
-    description: Sistemas de Home en SQL Server (misma tecnología, otro custodian)
+    description: Home systems on SQL Server (same technology, another custodian)
     data_class: confidential
     readers: [grp-datateam01-home-dbx-reader]
-    registration: manual            # doble aprobación: solo las tablas listadas
+    registration: manual            # double approval: only the listed tables
     approved_entities:
       - hbas_contracts
 
-  - container: motors-oracle         # ejemplo de alta progresiva: de momento solo en dev
+  - container: motors-oracle         # progressive rollout example: dev only for now
     custodian: motors
-    description: Sistemas de Motors en Oracle (segundo CLEX del mismo custodian)
+    description: Motors systems on Oracle (second CLEX of the same custodian)
     data_class: confidential
     environments: [dev]
     ingest:
       concurrency: 4
 
-  - container: e2e-selftest          # prueba end-to-end del framework: el job e2e simula a CLEX
+  - container: e2e-selftest          # end-to-end test of the framework: the e2e job simulates CLEX
     custodian: platform
-    description: Contenedor de pruebas. No recibe datos reales; cada ejecución del e2e crea y borra sus tablas.
+    description: Test container. It receives no real data; each e2e execution creates and deletes its tables.
     data_class: internal
     environments: [dev]
     e2e: true
     report:
-      fail_on_error: false           # el paso 3 provoca errores a propósito; los verifica el job e2e
-      row_count_grace_minutes: 0     # recuentos evaluados en la misma ejecución
+      fail_on_error: false           # step 3 causes errors on purpose; the e2e job checks them
+      row_count_grace_minutes: 0     # row counts evaluated in the same run

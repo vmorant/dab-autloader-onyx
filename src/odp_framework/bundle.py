@@ -1,30 +1,30 @@
-"""Generación de recursos del bundle (Python DABs) a partir de ``config/``.
+"""Generation of the bundle resources (Python DABs) from ``config/``.
 
-Por cada contenedor activo del landing:
+For each active landing container:
 
-* job ``ingest_<c>`` — trigger file arrival sobre ``_manifests/``::
+* job ``ingest_<c>`` — file arrival trigger on ``_manifests/``::
 
-      register  (wheel)      manifiestos nuevos → odp_manifests → registro odp_entities
-                             → qué tablas cargar
-      has_data               condición: ¿alguna tabla con datos nuevos?
-      ingest    (for_each)   una iteración por tabla: Auto Loader → bronze (append)
-      silver    (pipeline)   SDP: consolidación SCD1 bronze → silver (AUTO CDC)
-      report    (wheel)      reconciliación; run_if ALL_DONE
+      register  (wheel)      new manifests → odp_manifests → odp_entities registry
+                             → which tables to load
+      has_data               condition: any table with new data?
+      ingest    (for_each)   one iteration per table: Auto Loader → bronze (append)
+      silver    (pipeline)   SDP: SCD1 consolidation bronze → silver (AUTO CDC)
+      report    (wheel)      reconciliation; run_if ALL_DONE
 
-  register, las iteraciones de ingest y report comparten un job cluster
-  clásico; silver usa el cluster de su pipeline.
+  register, the ingest iterations and report share one classic job cluster;
+  silver uses its pipeline's cluster.
 
-* pipeline ``silver_<c>`` (SDP, compute clásico)
-* (opcional, ``manage_schemas``) esquemas bronze/silver, con grants de lectura
-  para ``readers``, y Volume ``odp_system``
-* (solo contenedores con ``e2e: true``) job ``e2e_<c>``: simula a CLEX en tres
-  pasos y ejecuta el job de ingesta tras cada uno (``odp_framework.e2e``)
+* pipeline ``silver_<c>`` (SDP, classic compute)
+* (optional, ``manage_schemas``) bronze/silver schemas, with read grants for
+  ``readers``, and the ``odp_system`` Volume
+* (only containers with ``e2e: true``) job ``e2e_<c>``: simulates CLEX in three
+  steps and runs the ingest job after each one (``odp_framework.e2e``)
 
-Las tablas de cada contenedor no aparecen aquí: las define CLEX en el manifiesto.
-Dar de alta una tabla nueva no requiere redesplegar.
+The tables of each container do not appear here: CLEX defines them in the
+manifest. Onboarding a new table does not require a redeploy.
 
-Devuelve diccionarios planos (testeables sin el CLI); ``resources/__init__.py``
-los convierte en recursos tipados.
+Returns plain dictionaries (testable without the CLI); ``resources/__init__.py``
+turns them into typed resources.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from .runtime import SYSTEM_VOLUME
 SILVER_SOURCE = "src/pipelines/silver.py"
 TASKS_CLUSTER = "tasks"
 
-# El run_as_sp escribe en esquemas y Volume que crea (y posee) el SP de deploy.
+# The run_as_sp writes to schemas and a Volume created (and owned) by the deploy SP.
 RUN_AS_SCHEMA_PRIVILEGES = ["USE_SCHEMA", "CREATE_TABLE", "SELECT", "MODIFY"]
 RUN_AS_VOLUME_PRIVILEGES = ["READ_VOLUME", "WRITE_VOLUME"]
 
@@ -91,11 +91,11 @@ def silver_pipeline_spec(spec: ContainerSpec, settings: DeploySettings, schema_r
         "channel": str(p["channel"]),
         "clusters": [cluster],
         "configuration": {
-            # Configuración del contenedor; las tablas salen del registro.
+            # Container configuration; the tables come from the registry.
             "odp.config": spec.runtime.to_json(),
         },
         "libraries": [{"file": {"path": SILVER_SOURCE}}],
-        # Código versionado: la wheel fijada para este target.
+        # Versioned code: the wheel pinned for this target.
         "environment": {"dependencies": [settings.framework_wheel]},
         "tags": _tags(spec, "databricks-pipeline"),
     }
@@ -145,12 +145,12 @@ def job_spec(spec: ContainerSpec, settings: DeploySettings, silver_key: str) -> 
     job: dict = {
         "name": spec.names["job_name"],
         "description": (
-            f"Ingesta del contenedor {spec.container} (custodian {spec.custodian}). Se dispara al llegar "
-            "manifiestos de CLEX: register → ingest (Auto Loader por tabla) → silver (SCD1) → report."
+            f"Ingestion of container {spec.container} (custodian {spec.custodian}). Triggered when CLEX "
+            "manifests arrive: register → ingest (Auto Loader per table) → silver (SCD1) → report."
         ),
         "tags": _tags(spec, "databricks-job"),
-        # Nunca dos ejecuciones a la vez sobre las mismas tablas; las que
-        # lleguen mientras tanto esperan en cola.
+        # Never two runs at the same time on the same tables; runs triggered
+        # in the meantime wait in the queue.
         "max_concurrent_runs": 1,
         "queue": {"enabled": True},
         "trigger": {
@@ -163,11 +163,11 @@ def job_spec(spec: ContainerSpec, settings: DeploySettings, silver_key: str) -> 
         "job_clusters": [{"job_cluster_key": TASKS_CLUSTER, "new_cluster": _tasks_cluster(spec, settings)}],
         "tasks": [
             _wheel_task("register", "odp-register",
-                        "Manifiestos nuevos → registro de tablas → lista de tablas a cargar",
+                        "New manifests → table registry → list of tables to load",
                         spec, settings, {"fail_on_error": fail_on_error}, max_retries=0),
             {
                 "task_key": "has_data",
-                "description": "Sin tablas con datos nuevos no hay nada que cargar",
+                "description": "Without tables with new data there is nothing to load",
                 "depends_on": [{"task_key": "register"}],
                 "condition_task": {
                     "op": "GREATER_THAN",
@@ -177,13 +177,13 @@ def job_spec(spec: ContainerSpec, settings: DeploySettings, silver_key: str) -> 
             },
             {
                 "task_key": "ingest",
-                "description": "Una iteración por tabla: Auto Loader landing → bronze",
+                "description": "One iteration per table: Auto Loader landing → bronze",
                 "depends_on": [{"task_key": "has_data", "outcome": "true"}],
                 "for_each_task": {
                     "inputs": "{{tasks.register.values.entities_to_load}}",
                     "concurrency": int(ingest["concurrency"]),
                     "task": _wheel_task(
-                        "ingest_entity", "odp-ingest", "Auto Loader de una tabla a bronze",
+                        "ingest_entity", "odp-ingest", "Auto Loader of one table into bronze",
                         spec, settings, {"entity": "{{input}}"},
                         max_retries=int(ingest["max_retries"]),
                         min_retry_interval_millis=60_000,
@@ -192,14 +192,14 @@ def job_spec(spec: ContainerSpec, settings: DeploySettings, silver_key: str) -> 
             },
             {
                 "task_key": "silver",
-                "description": "Consolidación SCD1 bronze → silver (réplica de origen)",
+                "description": "SCD1 consolidation bronze → silver (replica of the source)",
                 "depends_on": [{"task_key": "ingest"}],
-                # Si falla una tabla, el resto se consolida igual: bronze es
-                # append exactly-once y los snapshots full solo se aplican completos.
+                # If one table fails, the rest are still consolidated: bronze is
+                # append exactly-once and full snapshots are only applied when complete.
                 "run_if": "ALL_DONE",
                 "pipeline_task": {"pipeline_id": silver_ref, "full_refresh": False},
             },
-            _wheel_task("report", "odp-report", "Reconciliación manifiesto ↔ bronze y alertas",
+            _wheel_task("report", "odp-report", "Manifest ↔ bronze reconciliation and alerts",
                         spec, settings, {"fail_on_error": fail_on_error},
                         depends_on=[{"task_key": "silver"}], run_if="ALL_DONE", max_retries=0),
         ],
@@ -210,11 +210,11 @@ def job_spec(spec: ContainerSpec, settings: DeploySettings, silver_key: str) -> 
 
 
 def e2e_job_spec(spec: ContainerSpec, settings: DeploySettings, ingest_key: str) -> dict:
-    """reset → publish_N → run_N (job de ingesta) → check_N, para N = 1..3 → cleanup."""
+    """reset → publish_N → run_N (ingest job) → check_N, for N = 1..3 → cleanup."""
     from .e2e import STEPS
 
     ingest_ref = f"${{resources.jobs.{ingest_key}.id}}"
-    # Mismos valores en todas las tareas: nombres y run_ids de esta ejecución.
+    # Same values in every task: names and run_ids of this execution.
     run_params = {"e2e_id": "{{job.run_id}}", "start_ms": "{{job.start_time.timestamp_ms}}"}
 
     def e2e_task(key: str, action: str, step: int, after: str | None, description: str, **extra) -> dict:
@@ -223,29 +223,29 @@ def e2e_job_spec(spec: ContainerSpec, settings: DeploySettings, ingest_key: str)
         return _wheel_task(key, "odp-e2e", description, spec, settings, params,
                            max_retries=0, **depends, **extra)
 
-    # Empieza borrando lo que dejara una ejecución anterior fallida en este despliegue.
-    tasks: list[dict] = [e2e_task("reset", "cleanup", 0, None, "Borra restos de ejecuciones anteriores del e2e")]
+    # Starts by deleting whatever a previous failed execution left in this deployment.
+    tasks: list[dict] = [e2e_task("reset", "cleanup", 0, None, "Deletes leftovers of previous e2e executions")]
     previous: str | None = "reset"
     for step in STEPS:
         tasks.append(e2e_task(f"publish_{step}", "publish", step, previous,
-                              f"Simula a CLEX: parquet y manifiestos del paso {step}"))
+                              f"Simulates CLEX: parquet files and manifests of step {step}"))
         tasks.append({
             "task_key": f"run_{step}",
-            "description": f"Job de ingesta del contenedor tras el paso {step}",
+            "description": f"Container ingest job after step {step}",
             "depends_on": [{"task_key": f"publish_{step}"}],
             "run_job_task": {"job_id": ingest_ref},
         })
         tasks.append(e2e_task(f"check_{step}", "check", step, f"run_{step}",
-                              f"Comprueba bronze, silver, registro y hallazgos del paso {step}"))
+                              f"Checks bronze, silver, registry and findings of step {step}"))
         previous = f"check_{step}"
-    # Solo si todo ha ido bien (run_if por defecto): si falla, los datos se quedan para investigar.
-    tasks.append(e2e_task("cleanup", "cleanup", 0, previous, "Borra lo creado por esta ejecución"))
+    # Only if everything succeeded (default run_if): on failure, the data stays for investigation.
+    tasks.append(e2e_task("cleanup", "cleanup", 0, previous, "Deletes what this execution created"))
 
     job: dict = {
         "name": spec.names["e2e_job_name"],
         "description": (
-            f"Prueba end-to-end del contenedor {spec.container}: simula entregas de CLEX en tres pasos "
-            "(carga inicial, cambios, guardarraíles) y comprueba bronze, silver y hallazgos. Solo dev/pre."
+            f"End-to-end test of container {spec.container}: simulates CLEX deliveries in three steps "
+            "(initial load, changes, guardrails) and checks bronze, silver and findings. dev/pre only."
         ),
         "tags": _tags(spec, "databricks-job"),
         "max_concurrent_runs": 1,
@@ -262,8 +262,8 @@ def build_plan(config_dir: Path, settings: DeploySettings) -> BundlePlan:
     plan = BundlePlan()
     if f"-{__version__}-" not in Path(settings.framework_wheel).name:
         plan.warnings.append(
-            f"framework_wheel ({Path(settings.framework_wheel).name}) no es la versión del generador "
-            f"({__version__}). Pipelines y tareas ejecutarán la wheel fijada en el target."
+            f"framework_wheel ({Path(settings.framework_wheel).name}) is not the generator version "
+            f"({__version__}). Pipelines and tasks will run the wheel pinned in the target."
         )
     for spec in load_containers(config_dir, settings):
         silver_key = _key("silver", spec.container)
@@ -277,10 +277,10 @@ def build_plan(config_dir: Path, settings: DeploySettings) -> BundlePlan:
                 plan.schemas[key] = {
                     "catalog_name": catalog,
                     "name": spec.runtime.schema,
-                    "comment": f"{layer} del contenedor {spec.container} (custodian {spec.custodian})",
+                    "comment": f"{layer} of container {spec.container} (custodian {spec.custodian})",
                 }
                 grants = [
-                    # Lectura para el custodian / equipo; escribir solo lo hace el run_as_sp.
+                    # Read access for the custodian / team; only the run_as_sp writes.
                     {"principal": group, "privileges": ["USE_SCHEMA", "SELECT"]}
                     for group in spec.readers
                 ]
@@ -290,16 +290,16 @@ def build_plan(config_dir: Path, settings: DeploySettings) -> BundlePlan:
                     plan.schemas[key]["grants"] = grants
                 refs[layer] = f"${{resources.schemas.{key}.name}}"
             silver_schema_ref = refs["silver"]
-            # En mode: development el bundle prefija los esquemas (dev_<usuario>_...):
-            # la configuración de runtime usa el nombre desplegado, no el del naming.
-            # Bronze y silver comparten nombre de esquema (y prefijo).
+            # In mode: development the bundle prefixes the schemas (dev_<user>_...):
+            # the runtime configuration uses the deployed name, not the naming one.
+            # Bronze and silver share the schema name (and prefix).
             spec = replace(spec, runtime=replace(spec.runtime, schema=refs["bronze"]))
             plan.volumes[_key("system_volume", spec.container)] = {
                 "catalog_name": spec.runtime.bronze_catalog,
                 "schema_name": refs["bronze"],
                 "name": SYSTEM_VOLUME,
                 "volume_type": "MANAGED",
-                "comment": "Checkpoints y esquemas de Auto Loader de la plataforma. No tocar.",
+                "comment": "Platform Auto Loader checkpoints and schemas. Do not touch.",
             }
             if settings.run_as_sp:
                 plan.volumes[_key("system_volume", spec.container)]["grants"] = [
@@ -307,13 +307,13 @@ def build_plan(config_dir: Path, settings: DeploySettings) -> BundlePlan:
 
         elif spec.readers:
             plan.warnings.append(
-                f"{spec.container}: 'readers' solo se aplica con manage_schemas; los grants de sus "
-                "esquemas hay que darlos fuera del bundle."
+                f"{spec.container}: 'readers' only applies with manage_schemas; the grants on its "
+                "schemas must be given outside the bundle."
             )
 
         if spec.e2e:
-            # Cada despliegue (cada desarrollador en dev, el CI) usa su subárbol del
-            # contenedor e2e: no registra los manifiestos de otro ni se pisan.
+            # Each deployment (each developer in dev, the CI) uses its own subtree of the
+            # e2e container: it does not register another one's manifests and they do not collide.
             ns = spec.runtime.schema
             spec = replace(spec, runtime=replace(
                 spec.runtime,
@@ -321,11 +321,11 @@ def build_plan(config_dir: Path, settings: DeploySettings) -> BundlePlan:
                 manifests_dir=f"{spec.runtime.manifests_dir}/{ns}",
             ))
 
-        # La pipeline se mantiene aunque el contenedor esté en pausa: borrarla
-        # borraría sus tablas de silver.
+        # The pipeline is kept even when the container is paused: deleting it
+        # would delete its silver tables.
         plan.pipelines[silver_key] = silver_pipeline_spec(spec, settings, silver_schema_ref)
         if not spec.active:
-            plan.warnings.append(f"{spec.container}: active: false — sin job; esquemas, Volume y pipeline se conservan.")
+            plan.warnings.append(f"{spec.container}: active: false — no job; schemas, Volume and pipeline are kept.")
             continue
         ingest_key = _key("ingest", spec.container)
         plan.jobs[ingest_key] = job_spec(spec, settings, silver_key)

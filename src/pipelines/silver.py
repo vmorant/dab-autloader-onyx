@@ -1,8 +1,8 @@
-# Fuente SDP — consolidación silver (SCD1, réplica de origen) de un contenedor.
+# SDP source — silver consolidation (SCD1, replica of the source) of one container.
 #
-# Mismas entidades que bronze (registro odp_entities); lee las tablas bronze que
-# la tarea anterior del job acaba de actualizar. Los runs rechazados por
-# register (odp_rejected_runs) no se aplican.
+# Same entities as bronze (odp_entities registry); reads the bronze tables that
+# the previous job task has just updated. Runs rejected by register
+# (odp_rejected_runs) are not applied.
 
 from pyspark import pipelines as dp
 from pyspark.sql import SparkSession

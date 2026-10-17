@@ -1,36 +1,36 @@
-Contenedor motors-sqlserver (storage odpdatateam01devlzsto01) — lo que escribe CLEX
+Container motors-sqlserver (storage odpdatateam01devlzsto01) — what CLEX writes
 
 data/srv-motors-01/GDWR/dbo/customers/run_id=20261016T020000Z_8f3a1c2d/part-00000.parquet
 data/srv-motors-01/GDWR/dbo/customers/run_id=20261016T020000Z_8f3a1c2d/part-00001.parquet
-_manifests/srv-motors-01/GDWR/dbo/customers/20261016T020000Z_8f3a1c2d.json      <- al final
+_manifests/srv-motors-01/GDWR/dbo/customers/20261016T020000Z_8f3a1c2d.json      <- last
 
 data/srv-motors-01/GDWR/dbo/policies/run_id=20261016T021500Z_a71b0e44/part-00000.parquet
-_manifests/srv-motors-01/GDWR/dbo/policies/20261016T021500Z_a71b0e44.json        <- al final
+_manifests/srv-motors-01/GDWR/dbo/policies/20261016T021500Z_a71b0e44.json        <- last
 
-El manifiesto (samples/manifest_*.json) lleva load_spec: tabla destino, source_path,
-load_type, keys, secuencia... Es la única configuración de la tabla.
+The manifest (samples/manifest_*.json) carries load_spec: target table, source_path,
+load_type, keys, sequence... It is the table's only configuration.
 
-Reglas
-- Una carpeta run_id=... por extracción; los ficheros no se sobrescriben nunca.
-- El manifiesto se escribe cuando todos los parquet del run están escritos.
-- run_id = YYYYMMDDTHHMMSSZ (UTC de la extracción) + "_" + id del run de CLEX.
-- data_path del manifiesto = data/{load_spec.source_path}/run_id={run_id}/
-- CDC: columna de operación (I/U/D) y secuencia creciente por PK, nunca NULL.
-- Una vez registrada una tabla, CLEX no puede cambiar su source_path, load_type,
-  keys, sequence_by ni operation_column (SPEC_CONFLICT). El resto, subiendo spec_version.
-- El landing se purga por lifecycle (30 días en pro); bronze es el registro permanente.
+Rules
+- One run_id=... folder per extraction; files are never overwritten.
+- The manifest is written once all the run's parquet files are written.
+- run_id = YYYYMMDDTHHMMSSZ (UTC of the extraction) + "_" + CLEX run id.
+- Manifest data_path = data/{load_spec.source_path}/run_id={run_id}/
+- CDC: operation column (I/U/D) and sequence increasing per PK, never NULL.
+- Once a table is registered, CLEX cannot change its source_path, load_type,
+  keys, sequence_by or operation_column (SPEC_CONFLICT). Everything else, by bumping spec_version.
+- The landing is purged by lifecycle (30 days in pro); bronze is the permanent record.
 
-Resultado en Unity Catalog (catálogo por capa, esquema por contenedor; en el target dev
-el esquema lleva el prefijo del desarrollador: dev_<usuario>_motors_sqlserver)
-- odp_datateam01_dev_bronze.motors_sqlserver.odp_manifests       (todos los manifiestos)
-- odp_datateam01_dev_bronze.motors_sqlserver.odp_entities        (registro de tablas)
-- odp_datateam01_dev_bronze.motors_sqlserver.gdwr_customers      (append, eventos CDC)
+Result in Unity Catalog (catalog per layer, schema per container; in the dev target
+the schema carries the developer's prefix: dev_<user>_motors_sqlserver)
+- odp_datateam01_dev_bronze.motors_sqlserver.odp_manifests       (all manifests)
+- odp_datateam01_dev_bronze.motors_sqlserver.odp_entities        (table registry)
+- odp_datateam01_dev_bronze.motors_sqlserver.gdwr_customers      (append, CDC events)
 - odp_datateam01_dev_bronze.motors_sqlserver.gdwr_policies       (append, snapshots)
-- odp_datateam01_dev_silver.motors_sqlserver.gdwr_customers      (SCD1 = réplica)
-- odp_datateam01_dev_silver.motors_sqlserver.gdwr_policies       (SCD1 = réplica)
-- odp_datateam01_dev_bronze.motors_sqlserver.odp_load_log        (cargas a bronze por tabla)
+- odp_datateam01_dev_silver.motors_sqlserver.gdwr_customers      (SCD1 = replica)
+- odp_datateam01_dev_silver.motors_sqlserver.gdwr_policies       (SCD1 = replica)
+- odp_datateam01_dev_bronze.motors_sqlserver.odp_load_log        (bronze loads per table)
 - odp_datateam01_dev_bronze.motors_sqlserver.odp_run_findings    (register + report)
-- odp_datateam01_dev_bronze.motors_sqlserver.odp_rejected_runs   (runs en bronze que silver no aplica)
+- odp_datateam01_dev_bronze.motors_sqlserver.odp_rejected_runs   (runs in bronze that silver does not apply)
 - /Volumes/odp_datateam01_dev_bronze/motors_sqlserver/odp_system
-    checkpoints/odp_manifests                 checkpoint de la lectura de manifiestos
-    autoloader/{tabla}/checkpoint, /schema    checkpoint y esquema de Auto Loader por tabla
+    checkpoints/odp_manifests                 checkpoint for manifest reading
+    autoloader/{table}/checkpoint, /schema    Auto Loader checkpoint and schema per table

@@ -1,10 +1,9 @@
-"""Carga de recursos del bundle (Python DABs).
+"""Loading of the bundle resources (Python DABs).
 
-Lee ``config/`` y genera, por cada contenedor del landing, un job y
-una pipeline SDP (silver). Las tablas no se configuran aquí: las definen los manifiestos
-de CLEX. Toda la lógica está en ``odp_framework.bundle`` (misma wheel
-que ejecutan las pipelines), así generador y runtime van siempre en la misma
-versión.
+Reads ``config/`` and generates, for each landing container, a job and an SDP
+pipeline (silver). Tables are not configured here: the CLEX manifests define
+them. All the logic lives in ``odp_framework.bundle`` (the same wheel the
+pipelines run), so generator and runtime are always on the same version.
 """
 
 from pathlib import Path

@@ -1,4 +1,4 @@
-"""Hallazgos (register y report) y utilidades de tiempo comunes."""
+"""Findings (register and report) and shared time utilities."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def has_errors(findings: Iterable[Finding]) -> bool:
 
 
 def as_utc(ts: datetime | None) -> datetime | None:
-    """Spark devuelve timestamps sin zona (sesión en UTC): se tratan como UTC."""
+    """Spark returns timestamps without a time zone (UTC session): they are treated as UTC."""
     if ts is None:
         return None
     return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)

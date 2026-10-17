@@ -1,9 +1,9 @@
-# ONYX Data Platform — bundle de ingesta CLEX → bronze → silver de un equipo.
+# ONYX Data Platform — CLEX → bronze → silver ingestion bundle of one team.
 #
-# Un job por contenedor del landing (custodian × CLEX), generado desde config/
-# por resources/__init__.py (Python DABs): bronze con Auto Loader (for_each por
-# tabla) y silver con SDP (AUTO CDC). Las tablas las definen los manifiestos
-# de CLEX. Ver README.md.
+# One job per landing container (custodian × CLEX), generated from config/
+# by resources/__init__.py (Python DABs): bronze with Auto Loader (for_each per
+# table) and silver with SDP (AUTO CDC). The tables are defined by the CLEX
+# manifests. See README.md.
 
 bundle:
   name: odp-ingestion-datateam01
@@ -15,70 +15,70 @@ python:
     - "resources:load_resources"
 
 sync:
-  # Al workspace solo sube la fuente de la pipeline de silver; el framework
-  # se instala como wheel versionada (variable framework_wheel).
+  # Only the silver pipeline source is uploaded to the workspace; the framework
+  # is installed as a versioned wheel (framework_wheel variable).
   exclude:
     - src/odp_framework/**
-    - config/**            # se lee en el deploy y viaja en el job y la pipeline
+    - config/**            # read at deploy time; travels inside the job and the pipeline
     - tests/**
     - samples/**
     - scripts/**
 
 variables:
   team_id:
-    description: teamId estable del equipo (naming ODP)
+    description: Stable teamId of the team (ODP naming)
     default: datateam01
   env:
     description: dev | pre | pro
   landing_storage_account:
-    description: Storage account del landing del workspace (odp{owner}{env}lzsto{seq})
+    description: Landing storage account of the workspace (odp{owner}{env}lzsto{seq})
   framework_wheel:
     description: >-
-      Wheel de odp_framework fijada para este target (ruta en un Volume de solo
-      lectura). Subir de versión = PR que cambia esta ruta.
+      odp_framework wheel pinned for this target (path in a read-only
+      Volume). Upgrading = a PR that changes this path.
   pipeline_policy_id:
-    description: Cluster policy de la pipeline de silver (cluster_type dlt, tags obligatorios)
+    description: Cluster policy of the silver pipeline (cluster_type dlt, mandatory tags)
     default: ""
   job_policy_id:
-    description: Cluster policy del job cluster (register, ingest por tabla y report)
+    description: Cluster policy of the job cluster (register, per-table ingest and report)
     default: ""
   spark_version:
-    description: DBR del job cluster (Auto Loader de bronze y tareas wheel)
+    description: DBR of the job cluster (bronze Auto Loader and wheel tasks)
     default: "16.4.x-scala2.12"
   notification_emails:
-    description: Emails (separados por coma) que reciben los fallos del job
+    description: Comma-separated emails that receive job failures
     default: ""
   file_events:
     description: >-
-      true si la external location del landing tiene file events activados
-      (requiere los roles del Access Connector; sin ellos, Auto Loader lista).
+      true if the landing external location has file events enabled
+      (requires the Access Connector roles; without them, Auto Loader lists).
     default: "false"
   manage_schemas:
     description: >-
-      true: el bundle crea por contenedor los esquemas bronze/silver (con grants
-      de lectura para 'readers') y el Volume odp_system. Requiere que el SP de
-      deploy tenga USE CATALOG y CREATE SCHEMA en los catálogos del equipo.
+      true: the bundle creates, per container, the bronze/silver schemas (with
+      read grants for 'readers') and the odp_system Volume. Requires the deploy
+      SP to have USE CATALOG and CREATE SCHEMA on the team catalogs.
     default: "true"
   run_as_sp:
-    description: Application ID del service principal que ejecuta jobs y pipelines
+    description: Application ID of the service principal that runs jobs and pipelines
     default: ""
   deploy_sp:
-    description: Application ID del service principal del CI que despliega (CAN_MANAGE)
+    description: Application ID of the CI service principal that deploys (CAN_MANAGE)
     default: ""
   team_group:
-    description: Grupo Entra del equipo (permiso de lectura sobre jobs y pipelines)
+    description: Entra group of the team (read permission on jobs and pipelines)
     default: grp-datateam01-dbx-reader
 
 targets:
   dev:
-    # mode: development → jobs y pipelines con prefijo [dev usuario], triggers en
-    # pausa y esquemas propios por desarrollador (dev_<usuario>_<contenedor>):
-    # cada uno tiene su registro, bronze, silver y checkpoints; el landing es común.
+    # mode: development → jobs and pipelines prefixed with [dev user], paused
+    # triggers and per-developer schemas (dev_<user>_<container>): each developer
+    # has their own registry, bronze, silver and checkpoints; the landing is shared.
     mode: development
     default: true
     workspace:
       host: https://adb-0000000000000000.0.azuredatabricks.net   # odp-dbx-datateam01-dev
-    # Para probar el trigger file arrival con CLEX real en dev:
+    # To test the file arrival trigger with the real CLEX in dev:
     # presets:
     #   trigger_pause_status: UNPAUSED
     variables:
@@ -90,7 +90,7 @@ targets:
     mode: production
     workspace:
       host: https://adb-0000000000000001.1.azuredatabricks.net   # odp-dbx-datateam01-pre
-      # Despliega el CI con svc-dbks-datateam01-pre-deploy: una sola copia por target
+      # Deployed by the CI with svc-dbks-datateam01-pre-deploy: a single copy per target
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     run_as:
       service_principal_name: ${var.run_as_sp}
@@ -112,7 +112,7 @@ targets:
     mode: production
     workspace:
       host: https://adb-0000000000000002.2.azuredatabricks.net   # odp-dbx-datateam01-pro
-      # Despliega el CI con svc-dbks-datateam01-pro-deploy: una sola copia por target
+      # Deployed by the CI with svc-dbks-datateam01-pro-deploy: a single copy per target
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     run_as:
       service_principal_name: ${var.run_as_sp}
@@ -129,4 +129,4 @@ targets:
       job_policy_id: "<policy-id-jobs-pro>"
       run_as_sp: "<application-id-svc-dbks-datateam01-pro-run>"
       deploy_sp: "<application-id-svc-dbks-datateam01-pro-deploy>"
-      notification_emails: "<buzon-equipo@axa-partners.com>"
+      notification_emails: "<team-mailbox@axa-partners.com>"

@@ -1,26 +1,26 @@
-"""Contrato del manifiesto que CLEX escribe al terminar cada extracción.
+"""Contract of the manifest that CLEX writes when each extraction finishes.
 
-El manifiesto es el disparador y la fuente de la configuración de carga: dice
-qué tabla es (``load_spec.target_table``), dónde están sus datos
-(``load_spec.source_path``) y cómo consolidarla (``load_type``, keys,
-secuencia...). La configuración de CLEX se aprueba por PR en su repo; el
-manifiesto la transporta.
+The manifest is both the trigger and the source of the load configuration: it
+says which table it is (``load_spec.target_table``), where its data is
+(``load_spec.source_path``) and how to consolidate it (``load_type``, keys,
+sequence...). The CLEX configuration is approved by PR in its repo; the
+manifest carries it.
 
-Disposición en el contenedor del landing (un contenedor = custodian × CLEX)::
+Layout in the landing container (one container = custodian × CLEX)::
 
     data/{source_path}/run_id={run_id}/part-*.parquet
-    _manifests/{source_path}/{run_id}.json          <- se escribe AL FINAL
+    _manifests/{source_path}/{run_id}.json          <- written LAST
 
-Reglas para CLEX:
+Rules for CLEX:
 
-* Los parquet de un run se escriben en su carpeta ``run_id=...`` y nunca se
-  sobrescriben; repetir una extracción genera un ``run_id`` nuevo.
-* El manifiesto se escribe cuando todos los parquet del run están escritos.
-* ``run_id`` empieza por el instante de extracción en UTC
-  (``YYYYMMDDTHHMMSSZ``): de ahí sale la versión ordenable del snapshot.
-* CDC: ``operation_column`` normalizada y ``sequence_by`` creciente por PK
-  entre ventanas, nunca NULL. La carga inicial va como inserts.
-* Los checkpoints NO forman parte del contrato: los gestiona la plataforma.
+* The parquet files of a run are written in their ``run_id=...`` folder and
+  never overwritten; repeating an extraction produces a new ``run_id``.
+* The manifest is written once all the parquet files of the run are written.
+* ``run_id`` starts with the extraction instant in UTC
+  (``YYYYMMDDTHHMMSSZ``): the sortable snapshot version comes from it.
+* CDC: normalized ``operation_column`` and ``sequence_by`` increasing per PK
+  across windows, never NULL. The initial load is sent as inserts.
+* Checkpoints are NOT part of the contract: the platform manages them.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ LOAD_SPEC_DDL = (
     ">"
 )
 
-# Esquema explícito para Auto Loader: el manifiesto es un contrato, no se infiere.
+# Explicit schema for Auto Loader: the manifest is a contract, it is not inferred.
 MANIFEST_SCHEMA_DDL = ", ".join(
     [
         "contract_version STRING",
@@ -67,7 +67,7 @@ _SPEC_REQUIRED = ("target_table", "source_path", "load_type", "keys", "spec_vers
 
 
 def run_version(run_id: str | None) -> int | None:
-    """Versión ordenable (YYYYMMDDHHMMSS como entero) o None si el run_id no cumple."""
+    """Sortable version (YYYYMMDDHHMMSS as an integer) or None if the run_id does not comply."""
     if not run_id:
         return None
     m = RUN_ID_PATTERN.match(run_id)
@@ -96,56 +96,56 @@ def _identifiers(value: Any) -> bool:
 
 
 def validate_load_spec(spec: Any) -> list[str]:
-    """Reglas de la plataforma sobre lo que CLEX puede pedir (guardarraíles)."""
+    """Platform rules on what CLEX may request (guardrails)."""
     if not isinstance(spec, dict):
-        return ["falta 'load_spec'"]
-    errors = [f"falta 'load_spec.{k}'" for k in _SPEC_REQUIRED if spec.get(k) in (None, "", [])]
+        return ["missing 'load_spec'"]
+    errors = [f"missing 'load_spec.{k}'" for k in _SPEC_REQUIRED if spec.get(k) in (None, "", [])]
     if errors:
         return errors
 
     if not TABLE_NAME_PATTERN.match(str(spec["target_table"])):
-        errors.append(f"target_table {spec['target_table']!r}: solo minúsculas, dígitos y _ (sin catálogo ni esquema)")
+        errors.append(f"target_table {spec['target_table']!r}: only lowercase letters, digits and _ (no catalog or schema)")
     if not is_valid_source_path(spec["source_path"]):
-        errors.append(f"source_path {spec['source_path']!r}: {{conexion}}/{{bbdd}}/{{esquema}}/{{tabla}} sin '..' ni '/' inicial")
+        errors.append(f"source_path {spec['source_path']!r}: {{connection}}/{{database}}/{{schema}}/{{table}} without '..' or a leading '/'")
     if not _identifiers(spec["keys"]):
-        errors.append("keys debe ser una lista de identificadores")
+        errors.append("keys must be a list of identifiers")
     version = spec["spec_version"]
     if not isinstance(version, int) or isinstance(version, bool) or version < 1:
-        errors.append("spec_version debe ser un entero >= 1")
+        errors.append("spec_version must be an integer >= 1")
 
     load_type = spec["load_type"]
     if load_type == "cdc":
         cdc = spec.get("cdc") or {}
         if not _identifiers(cdc.get("sequence_by")):
-            errors.append("cdc.sequence_by obligatorio (lista de columnas)")
+            errors.append("cdc.sequence_by is required (list of columns)")
         op = cdc.get("operation_column")
         if not isinstance(op, str) or not IDENTIFIER_PATTERN.match(op):
-            errors.append("cdc.operation_column obligatorio")
+            errors.append("cdc.operation_column is required")
         deletes = cdc.get("delete_values")
         if not isinstance(deletes, (list, tuple)) or not deletes or not all(isinstance(v, str) for v in deletes):
-            errors.append("cdc.delete_values obligatorio (p. ej. ['D'])")
+            errors.append("cdc.delete_values is required (e.g. ['D'])")
         keys = set(spec["keys"] or ())
         if op in keys or keys & set(cdc.get("sequence_by") or ()):
-            errors.append("operation_column y sequence_by no pueden ser keys")
+            errors.append("operation_column and sequence_by cannot be keys")
     elif load_type != "full":
-        errors.append(f"load_type {load_type!r} no es 'cdc' ni 'full'")
+        errors.append(f"load_type {load_type!r} is neither 'cdc' nor 'full'")
     return errors
 
 
 def validate_manifest(manifest: dict[str, Any], *, data_dir: str = "data", run_partition: str = "run_id") -> list[str]:
-    """Valida un manifiesto ya parseado. Devuelve la lista de errores (vacía = válido)."""
-    errors = [f"falta '{key}'" for key in _REQUIRED if manifest.get(key) in (None, "")]
+    """Validates an already parsed manifest. Returns the list of errors (empty = valid)."""
+    errors = [f"missing '{key}'" for key in _REQUIRED if manifest.get(key) in (None, "")]
     if errors:
         return errors
 
     if manifest["contract_version"] != CONTRACT_VERSION:
         errors.append(f"contract_version {manifest['contract_version']!r} != {CONTRACT_VERSION!r}")
     if run_version(manifest["run_id"]) is None:
-        errors.append(f"run_id {manifest['run_id']!r} no cumple YYYYMMDDTHHMMSSZ_<id>")
+        errors.append(f"run_id {manifest['run_id']!r} does not match YYYYMMDDTHHMMSSZ_<id>")
     for key in ("file_count", "row_count"):
         value = manifest[key]
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            errors.append(f"'{key}' debe ser un entero >= 0")
+            errors.append(f"'{key}' must be an integer >= 0")
 
     spec_errors = validate_load_spec(manifest["load_spec"])
     errors.extend(spec_errors)
@@ -159,5 +159,5 @@ def validate_manifest(manifest: dict[str, Any], *, data_dir: str = "data", run_p
     if spec["load_type"] == "cdc":
         for key in ("seq_min", "seq_max"):
             if manifest.get(key) in (None, ""):
-                errors.append(f"CDC sin '{key}'")
+                errors.append(f"CDC without '{key}'")
     return errors

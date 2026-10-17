@@ -1,5 +1,5 @@
-"""Declaración de tablas y flows SDP (bronze y silver).
+"""SDP table and flow declarations (silver).
 
-Las funciones reciben ``spark`` y ``dp`` (``from pyspark import pipelines as dp``)
-como argumentos para poder probarlas fuera de Databricks con dobles de prueba.
+Functions receive ``spark`` and ``dp`` (``from pyspark import pipelines as dp``)
+as arguments so they can be tested outside Databricks with test doubles.
 """

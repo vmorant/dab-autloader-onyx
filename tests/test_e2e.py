@@ -1,10 +1,10 @@
-"""Kit e2e: escenario, simulador de CLEX, comprobaciones y limpieza.
+"""e2e kit: scenario, CLEX simulator, checks and cleanup.
 
-``test_scenario_checks_hold_on_the_reference_model`` reproduce el escenario con
-la lógica pura del framework (registro, runs rechazados, qué cargar,
-snapshots, reconciliación) y una referencia SCD1, y ejecuta el SQL de cada
-comprobación sobre SQLite: si una expectativa del e2e no cuadra con lo que
-hace el framework, falla aquí y no en el workspace.
+``test_scenario_checks_hold_on_the_reference_model`` replays the scenario with
+the framework's pure logic (registry, rejected runs, what to load, snapshots,
+reconciliation) and an SCD1 reference, and runs each check's SQL on SQLite: if
+an e2e expectation does not match what the framework does, it fails here and
+not in the workspace.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _all_deliveries():
     return [(step, d) for step in e2e.STEPS for d in e2e.deliveries(step)]
 
 
-# ---------------------------------------------------------------- escenario --
+# ----------------------------------------------------------------- scenario --
 def test_context_names(ctx, cfg):
     assert ctx.entity("customers") == "e2e_987654321_customers"
     assert ctx.source_path("customers") == "e2e-clex/E2E/r987654321/customers"
@@ -98,12 +98,12 @@ def test_publish_writes_all_data_before_any_manifest(ctx, cfg):
     assert [p[0] for p in published] == [ctx.entity(t) for t in ("customers", "customers", "policies", "agents")]
 
 
-# ---------------------------------------------------------- modelo de referencia --
+# ------------------------------------------------------------ reference model --
 T0 = datetime(2026, 10, 15, 8, 0, tzinfo=timezone.utc)
 
 
 def _cdc_reference(rows, keys, op_column, delete_values):
-    """SCD1 de AUTO CDC: por PK gana el evento de mayor secuencia; si es un delete, no hay fila."""
+    """AUTO CDC SCD1: per PK the event with the highest sequence wins; if it is a delete, there is no row."""
     latest = {}
     for r in rows:
         k = tuple(r[c] for c in keys)
@@ -114,7 +114,7 @@ def _cdc_reference(rows, keys, op_column, delete_values):
 
 
 def simulate(ctx, cfg, upto_step):
-    """Lo que dejaría el job de ingesta tras ``upto_step`` pasos, tabla a tabla."""
+    """What the ingestion job would leave after ``upto_step`` steps, table by table."""
     landing = {}                 # (source_path, run_id) -> Delivery
     ingested = set()
     manifests, findings, load_log = [], [], []
@@ -142,7 +142,7 @@ def simulate(ctx, cfg, upto_step):
             if status == "SUCCESS":
                 last_success[entity] = max(started, last_success.get(entity, started))
 
-        # ingest: Auto Loader carga todo lo nuevo de la carpeta de la tabla
+        # ingest: Auto Loader loads everything new in the table's folder
         for name in entities_to_load(entries, last_success):
             path = entries[name].spec.source_path
             for (p, run_id), d in sorted(landing.items()):
@@ -193,7 +193,7 @@ def simulate(ctx, cfg, upto_step):
 
 
 class SqliteSpark:
-    """Lo justo de Spark para ``run_checks``: tableExists y sql(...).collect()."""
+    """Just enough Spark for ``run_checks``: tableExists and sql(...).collect()."""
 
     COLUMNS = {"registry": ["entity", "status"]}
 
@@ -221,14 +221,14 @@ def test_scenario_checks_hold_on_the_reference_model(ctx, cfg, step):
 
 
 def test_reference_model_catches_a_broken_expectation(ctx, cfg):
-    # Sin el filtro de runs rechazados, el run en conflicto pisaría la fila 1 en silver.
+    # Without the rejected-runs filter, the conflicting run would overwrite row 1 in silver.
     tables = simulate(ctx, cfg, 3)
     silver_customers = f"{cfg.silver_catalog}.{cfg.schema}.{ctx.entity('customers')}"
     for row in tables[silver_customers]:
         if row["customer_id"] == 1:
-            row["name"] = "NO DEBE LLEGAR A SILVER"
+            row["name"] = "MUST NOT REACH SILVER"
     results = e2e.run_checks(SqliteSpark(tables), e2e.checks(ctx, 3))
-    assert [r.check.name for r in results if not r.ok] == ["run en conflicto no llega a silver (1)"]
+    assert [r.check.name for r in results if not r.ok] == ["conflicting run does not reach silver (1)"]
 
 
 def test_check_names_are_unique(ctx):
@@ -237,20 +237,20 @@ def test_check_names_are_unique(ctx):
         assert len(names) == len(set(names))
 
 
-# ------------------------------------------------------- ejecución y limpieza --
+# --------------------------------------------------------- execution and cleanup --
 def test_run_checks_reports_missing_tables_and_sql_errors():
     def boom(query):
-        raise RuntimeError("[UNRESOLVED_COLUMN] segment\nmás detalle")
+        raise RuntimeError("[UNRESOLVED_COLUMN] segment\nmore detail")
 
     spark = types.SimpleNamespace(catalog=types.SimpleNamespace(tableExists=lambda n: n == "t"), sql=boom)
     results = e2e.run_checks(spark, [
-        e2e.Check("cuenta sin tabla", "SELECT count(*) FROM x", 0, tables=("x",), default=0),
-        e2e.Check("valor sin tabla", "SELECT max(a) FROM x", "a", tables=("x",)),
-        e2e.Check("sql roto", "SELECT max(segment) FROM t", "gold", tables=("t",)),
+        e2e.Check("count without table", "SELECT count(*) FROM x", 0, tables=("x",), default=0),
+        e2e.Check("value without table", "SELECT max(a) FROM x", "a", tables=("x",)),
+        e2e.Check("broken sql", "SELECT max(segment) FROM t", "gold", tables=("t",)),
     ])
     assert [r.ok for r in results] == [True, False, False]
     assert results[2].actual == "ERROR RuntimeError: [UNRESOLVED_COLUMN] segment"
-    assert "FAIL sql roto" in e2e.format_results(2, results)
+    assert "FAIL broken sql" in e2e.format_results(2, results)
 
 
 class RecordingSpark:
@@ -265,7 +265,7 @@ class RecordingSpark:
             rows = [{"tableName": t} for t in self.tables.get(catalog, [])]
             return types.SimpleNamespace(collect=lambda: rows)
         if any(f in statement for f in self.failing):
-            raise RuntimeError("no se puede borrar\n...")
+            raise RuntimeError("cannot drop\n...")
         self.statements.append(statement)
 
 
@@ -284,7 +284,7 @@ def test_cleanup_removes_only_e2e_objects_of_this_deployment(ctx, cfg):
     assert spark.statements[1] == f"DELETE FROM {cfg.registry_fqn} WHERE startswith(entity, 'e2e_')"
     assert f"DROP TABLE IF EXISTS {bronze_e2e}" in spark.statements
     assert not any("odp_manifests" in s and s.startswith("DROP") for s in spark.statements)
-    assert len(warnings) == 1 and silver_e2e in warnings[0]       # mejor esfuerzo
+    assert len(warnings) == 1 and silver_e2e in warnings[0]       # best effort
     assert [op[1] for op in io.ops] == [f"{cfg.landing_root}/data/e2e-clex/E2E/",
                                         f"{cfg.manifests_root}e2e-clex/E2E/",
                                         f"{cfg.system_volume_path}/autoloader/"]
@@ -310,8 +310,8 @@ def test_e2e_task_main(cfg, monkeypatch, capsys):
 
     io = RecordingIO()
     assert e2e_task.main(base + ["--action=publish", "--step=1"], io=io) == 0
-    assert len(io.ops) == 4 and "paso 1" in capsys.readouterr().out
-    assert e2e_task.main(base + ["--action=check", "--step=1"], io=io) == 1        # nada cargado
+    assert len(io.ops) == 4 and "step 1" in capsys.readouterr().out
+    assert e2e_task.main(base + ["--action=check", "--step=1"], io=io) == 1        # nothing loaded
     assert "FAIL" in capsys.readouterr().out
     assert e2e_task.main(base + ["--action=cleanup"], io=io) == 0
     with pytest.raises(SystemExit):

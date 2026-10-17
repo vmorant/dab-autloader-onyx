@@ -1,38 +1,38 @@
-"""Registro de entidades de un contenedor, derivado de los manifiestos de CLEX.
+"""Entity registry of a container, derived from the CLEX manifests.
 
-La tarea ``register`` lo recalcula en cada ejecución a partir de **todos** los
-manifiestos recibidos (resultado determinista e idempotente). Lo usan:
+The ``register`` task recomputes it on every run from **all** the manifests
+received (deterministic and idempotent result). It is used by:
 
-* ``register``: decide qué tablas cargar en bronze (``entities_to_load``).
-* ``ingest``: toma de aquí la especificación de su tabla.
-* la pipeline de silver: define su grafo al arrancar cada actualización y el
-  flow de una tabla tiene que existir siempre, también cuando ese día no
-  llega nada de ella; por eso lee el registro y no los manifiestos sueltos.
+* ``register``: decides which tables to load into bronze (``entities_to_load``).
+* ``ingest``: takes the specification of its table from here.
+* the silver pipeline: defines its graph at the start of every update, and the
+  flow of a table must always exist, even when nothing arrives for it that
+  day; that is why it reads the registry and not individual manifests.
 
-Guardarraíles sobre lo que CLEX puede pedir:
+Guardrails on what CLEX may request:
 
-* El manifiesto tiene que cumplir el contrato (``manifest.validate_manifest``):
-  el destino es solo un nombre de tabla (el catálogo y el esquema los pone la
-  plataforma), la ruta queda dentro de ``data/`` del contenedor...
-* Una vez registrada una tabla, ``source_path``, ``load_type``, ``keys``,
-  ``sequence_by`` y ``operation_column`` no cambian: cambiarlos rompería la
-  réplica o el stream. Un manifiesto que lo intente es ``SPEC_CONFLICT`` y su
-  run no se asocia a la tabla.
-* El resto de la especificación (schema_hints, delete_values,
-  allow_empty_snapshot) solo cambia subiendo ``spec_version``.
-* Dos tablas no pueden leer la misma ``source_path`` ni rutas anidadas
-  (``a/b/c`` y ``a/b/c/d``): Auto Loader lee la carpeta de forma recursiva.
-* Los manifiestos se procesan en orden de llegada (``_ingested_at``) y, a
-  igualdad, de versión: la especificación registrada es la primera que se
-  aceptó, aunque después llegue un manifiesto con un ``run_id`` anterior.
-* El estado lo decide la plataforma: ``disabled_entities`` →  DISABLED; en modo
-  ``manual`` solo las ``approved_entities`` quedan ACTIVE.
+* The manifest must comply with the contract (``manifest.validate_manifest``):
+  the target is only a table name (catalog and schema are set by the
+  platform), the path stays within the container's ``data/``...
+* Once a table is registered, ``source_path``, ``load_type``, ``keys``,
+  ``sequence_by`` and ``operation_column`` do not change: changing them would
+  break the replica or the stream. A manifest that tries is ``SPEC_CONFLICT``
+  and its run is not associated with the table.
+* The rest of the specification (schema_hints, delete_values,
+  allow_empty_snapshot) only changes by bumping ``spec_version``.
+* Two tables cannot read the same ``source_path`` nor nested paths
+  (``a/b/c`` and ``a/b/c/d``): Auto Loader reads the folder recursively.
+* Manifests are processed in arrival order (``_ingested_at``) and, on ties, in
+  version order: the registered specification is the first one accepted, even
+  if a manifest with an earlier ``run_id`` arrives later.
+* The status is decided by the platform: ``disabled_entities`` →  DISABLED; in
+  ``manual`` mode only the ``approved_entities`` become ACTIVE.
 
-Runs rechazados (``odp_rejected_runs``): Auto Loader lee la carpeta completa de
-cada tabla, así que los parquet de un run cuyo manifiesto se rechaza (inválido,
-``SPEC_CONFLICT`` o ``SOURCE_PATH_CONFLICT``) llegan igualmente a bronze si
-están en la carpeta de una tabla registrada. Bronze los conserva como
-evidencia; silver los excluye por ``_run_id``.
+Rejected runs (``odp_rejected_runs``): Auto Loader reads the whole folder of
+each table, so the parquet files of a run whose manifest is rejected (invalid,
+``SPEC_CONFLICT`` or ``SOURCE_PATH_CONFLICT``) still reach bronze if they are
+in the folder of a registered table. Bronze keeps them as evidence; silver
+excludes them by ``_run_id``.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def _arrival_key(manifest: Mapping[str, Any]) -> tuple:
 
 
 def paths_overlap(a: str, b: str) -> bool:
-    """Misma ruta o una dentro de la otra (Auto Loader lee recursivamente)."""
+    """Same path or one inside the other (Auto Loader reads recursively)."""
     return a == b or a.startswith(b + "/") or b.startswith(a + "/")
 
 REGISTRY_SCHEMA_DDL = ", ".join(
@@ -93,11 +93,11 @@ class RegistryEntry:
     last_run_id: str
     registered_at: datetime | None
     updated_at: datetime | None
-    last_manifest_at: datetime | None = None    # último manifiesto válido recibido
+    last_manifest_at: datetime | None = None    # last valid manifest received
 
 
 def spec_from_manifest(manifest: Mapping[str, Any]) -> RuntimeEntity:
-    """Especificación de carga de un manifiesto ya validado."""
+    """Load specification of an already validated manifest."""
     spec = manifest["load_spec"]
     cdc = spec.get("cdc") or {}
     full = spec.get("full") or {}
@@ -134,11 +134,11 @@ def build_registry(
     manifests: Iterable[Mapping[str, Any]],
     since: datetime | None = None,
 ) -> tuple[dict[str, RegistryEntry], list[Finding]]:
-    """Recalcula el registro desde todos los manifiestos.
+    """Recomputes the registry from all the manifests.
 
-    Los hallazgos solo se emiten para manifiestos ingeridos desde ``since``
-    (los nuevos de esta ejecución): un conflicto se avisa cuando llega, no en
-    todas las ejecuciones posteriores.
+    Findings are only emitted for manifests ingested since ``since`` (the new
+    ones in this run): a conflict is reported when it arrives, not in every
+    later run.
     """
     since_utc = as_utc(since)
     findings: list[Finding] = []
@@ -169,8 +169,8 @@ def build_registry(
             clash = next((p for p in path_owner if paths_overlap(spec.source_path, p)), None)
             if clash is not None:
                 emit(m, Finding(ERROR, "SOURCE_PATH_CONFLICT", spec.entity, run_id,
-                                f"{spec.source_path} coincide o se anida con {clash}, que ya lee "
-                                f"{path_owner[clash]}; no se registra"))
+                                f"{spec.source_path} is the same as or nested with {clash}, already read by "
+                                f"{path_owner[clash]}; not registered"))
                 continue
             state[spec.entity] = {"spec": spec, "first_run_id": run_id, "last_run_id": run_id,
                                   "registered_at": ts, "updated_at": ts, "last_manifest_at": ts}
@@ -181,8 +181,8 @@ def build_registry(
         diffs = [f for f in IMMUTABLE_FIELDS if getattr(spec, f) != getattr(registered, f)]
         if diffs:
             emit(m, Finding(ERROR, "SPEC_CONFLICT", spec.entity, run_id,
-                            f"Cambia campos inmutables {diffs}; el run no se carga. Requiere una "
-                            "tabla nueva o una migración controlada por la plataforma."))
+                            f"Changes immutable fields {diffs}; the run is not loaded. It requires a "
+                            "new table or a migration controlled by the platform."))
             continue
 
         if spec.spec_version > registered.spec_version:
@@ -192,8 +192,8 @@ def build_registry(
                             f"spec_version {registered.spec_version} → {spec.spec_version}"))
         elif spec != registered:
             emit(m, Finding(WARN, "SPEC_CHANGED_WITHOUT_VERSION", spec.entity, run_id,
-                            f"La especificación cambia sin subir spec_version ({spec.spec_version}); "
-                            "se mantiene la registrada"))
+                            f"The specification changes without bumping spec_version ({spec.spec_version}); "
+                            "the registered one is kept"))
         current["last_run_id"] = run_id
         current["last_manifest_at"] = _latest(current["last_manifest_at"], ts)
 
@@ -210,7 +210,7 @@ def build_registry(
             continue
         code = "PENDING_APPROVAL" if entry.status == PENDING_APPROVAL else "DISABLED_ENTITY"
         emit(m, Finding(WARN, code, entry.spec.entity, m["run_id"],
-                        "Entrega recibida pero la tabla no está activa: no se carga."))
+                        "Delivery received but the table is not active: not loaded."))
     return entries, findings
 
 
@@ -219,14 +219,14 @@ REJECTED_RUNS_SCHEMA_DDL = "entity STRING, run_id STRING, reason STRING, manifes
 
 @dataclass(frozen=True)
 class RejectedRun:
-    entity: str                     # tabla registrada cuya carpeta contiene el run
+    entity: str                     # registered table whose folder contains the run
     run_id: str
     reason: str                     # INVALID_MANIFEST | SPEC_CONFLICT | SOURCE_PATH_CONFLICT
-    manifest_target: str | None     # lo que pedía el manifiesto rechazado
+    manifest_target: str | None     # what the rejected manifest requested
 
 
 def _rejection_reason(cfg: RuntimeConfig, manifest: Mapping[str, Any], owner: RegistryEntry) -> str | None:
-    """Motivo por el que el manifiesto no vale para la tabla dueña de su carpeta (None = aceptado)."""
+    """Why the manifest is not valid for the table that owns its folder (None = accepted)."""
     if validate_manifest(dict(manifest), data_dir=cfg.data_dir, run_partition=cfg.run_partition):
         return "INVALID_MANIFEST"
     spec = spec_from_manifest(manifest)
@@ -238,7 +238,7 @@ def _rejection_reason(cfg: RuntimeConfig, manifest: Mapping[str, Any], owner: Re
 
 
 def _owner_of(path: str, owners: Mapping[str, RegistryEntry]) -> RegistryEntry | None:
-    """Tabla cuyo Auto Loader lee ``path``: la de la misma ruta o la de la ruta padre más larga."""
+    """Table whose Auto Loader reads ``path``: the one with the same path or with the longest parent path."""
     if path in owners:
         return owners[path]
     parents = [p for p in owners if path.startswith(p + "/")]
@@ -246,10 +246,11 @@ def _owner_of(path: str, owners: Mapping[str, RegistryEntry]) -> RegistryEntry |
 
 
 def _run_locations(cfg: RuntimeConfig, manifest: Mapping[str, Any]) -> set[tuple[str, str]]:
-    """Carpetas ``(ruta, run_id)`` donde pueden estar los parquet del manifiesto.
+    """Folders ``(path, run_id)`` where the manifest's parquet files may be.
 
-    La que dicen ``source_path`` + ``run_id`` y la que dice ``data_path`` (en un
-    manifiesto inválido pueden no coincidir; en bronze manda la carpeta).
+    The one given by ``source_path`` + ``run_id`` and the one given by
+    ``data_path`` (they may differ in an invalid manifest; in bronze the folder
+    is what counts).
     """
     locations: set[tuple[str, str]] = set()
     spec = manifest.get("load_spec")
@@ -271,16 +272,16 @@ def rejected_runs(
     manifests: Iterable[Mapping[str, Any]],
     entries: Mapping[str, RegistryEntry],
 ) -> list[RejectedRun]:
-    """Runs cuyos ficheros caen en la carpeta de una tabla registrada sin un manifiesto aceptado para ella.
+    """Runs whose files fall in the folder of a registered table without a manifest accepted for it.
 
-    Determinista: se recalcula en cada ``register`` desde todos los manifiestos.
-    "Caer en la carpeta" incluye subcarpetas (Auto Loader lee recursivamente) y
-    la carpeta que indica ``data_path``. Si el mismo run tiene además un
-    manifiesto aceptado para esa tabla, no se rechaza. Un run rechazado cuya
-    carpeta no lee ninguna tabla no llega a bronze y no aparece aquí.
+    Deterministic: recomputed on every ``register`` from all the manifests.
+    "Falling in the folder" includes subfolders (Auto Loader reads recursively)
+    and the folder given by ``data_path``. If the same run also has a manifest
+    accepted for that table, it is not rejected. A rejected run whose folder is
+    not read by any table never reaches bronze and does not appear here.
 
-    Los runs sin manifiesto (CLEX cortado a mitad) no están: CDC los aplica,
-    full no (no hay manifiesto que los dé por completos).
+    Runs without a manifest (CLEX cut off halfway) are not included: CDC applies
+    them, full does not (there is no manifest to declare them complete).
     """
     owners = {e.spec.source_path: e for e in entries.values()}
     accepted: set[tuple[str, str]] = set()
@@ -304,7 +305,7 @@ def rejected_rows(runs: Iterable[RejectedRun]) -> list[tuple]:
 
 
 def load_rejected_runs(spark, cfg: RuntimeConfig) -> dict[str, frozenset[str]]:
-    """``{tabla: run_ids}`` que silver no debe aplicar. Lo leen la pipeline de silver y report."""
+    """``{table: run_ids}`` that silver must not apply. Read by the silver pipeline and report."""
     if not spark.catalog.tableExists(cfg.rejected_runs_fqn):
         return {}
     out: dict[str, set[str]] = {}
@@ -337,11 +338,11 @@ def entities_to_load(
     entries: Mapping[str, RegistryEntry],
     last_success: Mapping[str, datetime],
 ) -> list[str]:
-    """Tablas activas con algún manifiesto posterior al inicio de su última carga correcta.
+    """Active tables with a manifest later than the start of their last successful load.
 
-    Incluye solas las que fallaron en una ejecución anterior (no tienen carga
-    correcta posterior a su último manifiesto) y excluye las que no han
-    recibido nada nuevo. Auto Loader es idempotente: cargar de más no duplica.
+    Automatically includes those that failed in a previous run (no successful
+    load after their last manifest) and excludes those that have received
+    nothing new. Auto Loader is idempotent: loading too much does not duplicate.
     """
     out = []
     for name in sorted(entries):
@@ -375,7 +376,7 @@ def entity_from_row(row: Mapping[str, Any]) -> RuntimeEntity:
 
 
 def load_active_entities(spark, cfg: RuntimeConfig) -> list[RuntimeEntity]:
-    """Lo usan las pipelines al definir su grafo."""
+    """Used by the pipelines when defining their graph."""
     if not spark.catalog.tableExists(cfg.registry_fqn):
         return []
     rows = spark.read.table(cfg.registry_fqn).where(f"status = '{ACTIVE}'").collect()

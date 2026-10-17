@@ -1,4 +1,4 @@
-"""Registro de entidades derivado de los manifiestos (guardarraíles incluidos)."""
+"""Entity registry derived from the manifests (guardrails included)."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def test_immutable_fields_cannot_change(cfg):
     ]
     entries, findings = build_registry(cfg, manifests)
     assert entries["gdwr_customers"].spec == replace(CUSTOMERS, schema_hints=None)
-    assert entries["gdwr_customers"].last_run_id == R1          # los runs en conflicto no se asocian
+    assert entries["gdwr_customers"].last_run_id == R1          # conflicting runs are not associated
     assert [f.code for f in findings] == ["SPEC_CONFLICT", "SPEC_CONFLICT"]
     assert "keys" in findings[0].detail and "source_path" in findings[1].detail
 
@@ -77,7 +77,7 @@ def test_immutable_fields_cannot_change(cfg):
 def test_mutable_fields_change_only_with_new_spec_version(cfg):
     manifests = [
         make_manifest(run_id=R1),
-        make_manifest(run_id=R2, schema_hints="customer_id BIGINT"),                 # sin subir versión
+        make_manifest(run_id=R2, schema_hints="customer_id BIGINT"),                 # without bumping the version
         make_manifest(run_id=R3, schema_hints="customer_id BIGINT", spec_version=2),
     ]
     entries, findings = build_registry(cfg, manifests)
@@ -94,7 +94,7 @@ def test_two_tables_cannot_read_the_same_path(cfg):
 
 
 def test_invalid_manifests_are_reported_not_registered(cfg):
-    entries, findings = build_registry(cfg, [make_manifest(target="otro.esquema.tabla")])
+    entries, findings = build_registry(cfg, [make_manifest(target="other.schema.table")])
     assert entries == {}
     assert _codes(findings) == {(ERROR, "INVALID_MANIFEST")}
 
@@ -117,8 +117,8 @@ def test_status_comes_from_platform_config(cfg):
 
 def test_findings_only_for_new_manifests(cfg):
     old = make_manifest(run_id=R1, ingested_at=T0 - timedelta(days=2))
-    old_conflict = make_manifest(run_id=R2, keys=["otra"], ingested_at=T0 - timedelta(days=1))
-    new_conflict = make_manifest(run_id=R3, keys=["otra"], ingested_at=T0 + timedelta(minutes=1))
+    old_conflict = make_manifest(run_id=R2, keys=["other"], ingested_at=T0 - timedelta(days=1))
+    new_conflict = make_manifest(run_id=R3, keys=["other"], ingested_at=T0 + timedelta(minutes=1))
     _, findings = build_registry(cfg, [old, old_conflict, new_conflict], since=T0)
     assert [(f.code, f.run_id) for f in findings] == [("SPEC_CONFLICT", R3)]
 
@@ -177,17 +177,17 @@ def test_entities_to_load(cfg):
     entries, _ = build_registry(cfg, manifests)
     assert entries["gdwr_customers"].last_manifest_at == T0 + timedelta(hours=1)
 
-    # nunca cargadas → las dos
+    # never loaded → both
     assert entities_to_load(entries, {}) == ["gdwr_customers", "gdwr_policies"]
-    # policies cargada después de su manifiesto; customers tiene un manifiesto posterior a su carga
+    # policies loaded after its manifest; customers has a manifest later than its load
     done = {"gdwr_customers": T0 + timedelta(minutes=30), "gdwr_policies": T0 + timedelta(minutes=30)}
     assert entities_to_load(entries, done) == ["gdwr_customers"]
-    # las no activas no se cargan
+    # inactive ones are not loaded
     entries, _ = build_registry(replace(cfg, disabled_entities=("gdwr_customers",)), manifests)
     assert entities_to_load(entries, {}) == ["gdwr_policies"]
 
 
-# ------------------------------------------------------------ runs rechazados --
+# -------------------------------------------------------------- rejected runs --
 R4 = "20261017T020000Z_dddd"
 
 
@@ -216,10 +216,10 @@ def test_invalid_manifest_in_a_registered_folder_is_rejected(cfg):
 def test_accepted_runs_and_unowned_folders_are_not_rejected(cfg):
     manifests = [
         make_manifest(run_id=R1),
-        make_manifest(run_id=R2, schema_hints="x INT"),                       # cambio sin versión: se acepta
-        make_manifest(run_id=R3, source_path="srv-motors-01/GDWR/dbo/clients", spec_version=2),  # nadie lee esa carpeta
-        make_manifest(run_id=R4, keys=["x"]),                                 # conflicto...
-        make_manifest(run_id=R4),                                             # ...pero el mismo run también se acepta
+        make_manifest(run_id=R2, schema_hints="x INT"),                       # change without version: accepted
+        make_manifest(run_id=R3, source_path="srv-motors-01/GDWR/dbo/clients", spec_version=2),  # no table reads that folder
+        make_manifest(run_id=R4, keys=["x"]),                                 # conflict...
+        make_manifest(run_id=R4),                                             # ...but the same run is also accepted
     ]
     assert _rejected(cfg, manifests) == []
 
@@ -240,10 +240,10 @@ def test_load_rejected_runs(cfg):
     assert load_rejected_runs(spark, cfg) == {}
 
 
-# ------------------------------------------------- hallazgos de la revisión --
+# ---------------------------------------------------------- review findings --
 def test_registered_spec_is_the_first_accepted_not_the_oldest_run_id(cfg):
-    # Llega tarde un manifiesto con un run_id anterior y otras keys: no puede
-    # cambiar la especificación ya registrada.
+    # A manifest with an earlier run_id and other keys arrives late: it cannot
+    # change the specification already registered.
     first = make_manifest(run_id=R2, ingested_at=T0)
     late = make_manifest(run_id=R1, keys=["customer_id", "branch"], ingested_at=T0 + timedelta(hours=1))
     entries, findings = build_registry(cfg, [late, first])
@@ -259,14 +259,14 @@ def test_nested_source_paths_conflict(cfg):
     entries, findings = build_registry(cfg, [parent, child])
     assert list(entries) == ["gdwr_customers"]
     assert [f.code for f in findings] == ["SOURCE_PATH_CONFLICT"]
-    # sus ficheros están dentro de la carpeta de gdwr_customers: los lee su Auto Loader
+    # its files are inside the gdwr_customers folder: its Auto Loader reads them
     assert _rejected(cfg, [parent, child]) == [
         ("gdwr_customers", R2, "SOURCE_PATH_CONFLICT", "gdwr_customers_hist")]
 
 
 def test_rejection_also_covers_the_folder_named_in_data_path(cfg):
     bad = make_manifest(run_id=R2)
-    bad["data_path"] = f"data/srv-motors-01/GDWR/dbo/customers/run_id={R3}/"      # no coincide con run_id
+    bad["data_path"] = f"data/srv-motors-01/GDWR/dbo/customers/run_id={R3}/"      # does not match run_id
     assert _rejected(cfg, [make_manifest(run_id=R1), bad]) == [
         ("gdwr_customers", R2, "INVALID_MANIFEST", "gdwr_customers"),
         ("gdwr_customers", R3, "INVALID_MANIFEST", "gdwr_customers"),

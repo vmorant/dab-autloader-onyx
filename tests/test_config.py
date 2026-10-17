@@ -70,7 +70,7 @@ def test_runtime_json_roundtrip_excludes_entities(settings):
 
 def test_runtime_rejects_other_contract(settings):
     rt = load_containers(CONFIG_DIR, settings)[0].runtime
-    with pytest.raises(ValueError, match="Contrato"):
+    with pytest.raises(ValueError, match="Configuration contract"):
         load_runtime_config(rt.to_json().replace(f'"contract":{rt.contract}', '"contract":0'))
     with pytest.raises(ValueError, match="odp.config"):
         load_runtime_config(None)
@@ -92,19 +92,19 @@ containers:
         ("{container: motors-sqlserver, custodian: motors, registration: magic}", "registration"),
         ("{container: motors-sqlserver, custodian: motors, approved_entities: [Bad.Name]}", "approved_entities"),
         ("{container: motors-sqlserver, custodian: motors, approved_entities: [a_b], disabled_entities: [a_b]}",
-         "aprobadas y deshabilitadas"),
-        ("{container: motors-sqlserver, custodian: motors, entities: []}", "claves desconocidas"),
+         "both approved and disabled"),
+        ("{container: motors-sqlserver, custodian: motors, entities: []}", "unknown keys"),
         ("{container: motors-sqlserver}", "custodian"),
-        ("{container: Motors_SQL, custodian: motors}", "nombre de contenedor"),
+        ("{container: Motors_SQL, custodian: motors}", "container name"),
         ("{container: motors-sqlserver, custodian: motors, ingest: {concurrency: 500}}", "concurrency"),
         ("{container: motors-sqlserver, custodian: motors, environments: [qa]}", "environments"),
         ("{container: motors-sqlserver, custodian: motors, storage_account: Bad-Account}", "storage_account"),
         ("{container: motors-sqlserver, custodian: motors, readers: grp-x}", "readers"),
-        ("{container: e2e-x, custodian: p, e2e: true}", "sin pro"),
-        ("{container: e2e-x, custodian: p, e2e: true, environments: [dev, pro]}", "sin pro"),
+        ("{container: e2e-x, custodian: p, e2e: true}", "without pro"),
+        ("{container: e2e-x, custodian: p, e2e: true, environments: [dev, pro]}", "without pro"),
         ("{container: e2e-x, custodian: p, e2e: true, environments: [dev], registration: manual}",
          "registration auto"),
-        ("{container: e2e-x, custodian: p, e2e: 'yes', environments: [dev]}", "true o false"),
+        ("{container: e2e-x, custodian: p, e2e: 'yes', environments: [dev]}", "true or false"),
     ],
 )
 def test_container_validation_errors(tmp_path, settings, entry, expected):
@@ -134,12 +134,12 @@ containers:
     with pytest.raises(ConfigError) as exc:
         load_containers(root, settings)
     joined = "\n".join(exc.value.errors)
-    assert "repetido" in joined and "registration" in joined and "custodian" in joined
+    assert "duplicated" in joined and "registration" in joined and "custodian" in joined
 
 
 def test_missing_list(tmp_path, settings):
     with pytest.raises(ConfigError, match="containers"):
-        load_containers(_write_containers(tmp_path, "otra_cosa: 1\n"), settings)
+        load_containers(_write_containers(tmp_path, "something_else: 1\n"), settings)
 
 
 def test_settings_from_bundle_variables():

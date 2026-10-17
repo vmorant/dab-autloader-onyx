@@ -1,23 +1,22 @@
-"""Selección del siguiente snapshot completo para las entidades full.
+"""Selection of the next complete snapshot for full entities.
 
-La consolidación SCD1 de una entidad full usa
-``create_auto_cdc_from_snapshot_flow``: compara cada snapshot con el anterior y
-deduce inserts, updates y deletes. Un snapshot incompleto borraría filas de
-silver, así que solo se aplica un run si:
+The SCD1 consolidation of a full entity uses
+``create_auto_cdc_from_snapshot_flow``: it compares each snapshot with the
+previous one and derives inserts, updates and deletes. An incomplete snapshot
+would delete rows from silver, so a run is only applied if:
 
-* tiene manifiesto (CLEX lo escribe al final), y
-* las filas que hay en bronze para ese ``run_id`` coinciden con las del manifiesto, y
-* no está vacío (salvo ``allow_empty_snapshot``).
+* it has a manifest (CLEX writes it last), and
+* the rows in bronze for that ``run_id`` match the manifest, and
+* it is not empty (unless ``allow_empty_snapshot``).
 
-Los runs pendientes se aplican en orden de versión, todos en la misma
-actualización pero cada uno en su commit, para que el change data feed de
-silver refleje los cambios de cada snapshot. Si un run
-más nuevo ya está completo, los anteriores incompletos se saltan: un snapshot
-full sustituye a los previos.
+Pending runs are applied in version order, all in the same update but each in
+its own commit, so that the silver change data feed reflects the changes of
+each snapshot. If a newer run is already complete, the older incomplete ones
+are skipped: a full snapshot replaces the previous ones.
 
-Al empezar de cero (primera actualización o full refresh) se parte del snapshot
-completo más reciente: en SCD1 el estado final es el mismo, y repasar todo el
-histórico de bronze uno a uno sería muy caro.
+When starting from scratch (first update or full refresh) the flow starts from
+the most recent complete snapshot: in SCD1 the final state is the same, and
+replaying the whole bronze history one by one would be very expensive.
 """
 
 from __future__ import annotations
@@ -48,10 +47,10 @@ def candidate_run_ids(
     manifest_runs: Iterable[tuple[str, int | None]],
     latest_version: int | None,
 ) -> dict[str, tuple[int, int | None]]:
-    """Runs con versión válida posterior a ``latest_version``.
+    """Runs with a valid version later than ``latest_version``.
 
-    Devuelve ``{run_id: (version, manifest_rows)}``. Sirve para contar en bronze
-    solo los runs que pueden aplicarse.
+    Returns ``{run_id: (version, manifest_rows)}``. Used to count in bronze only
+    the runs that can be applied.
     """
     out: dict[str, tuple[int, int | None]] = {}
     for run_id, rows in manifest_runs:
@@ -69,10 +68,10 @@ def select_next_run(
     latest_version: int | None,
     allow_empty: bool = False,
 ) -> RunState | None:
-    """Siguiente run a aplicar.
+    """Next run to apply.
 
-    Con ``latest_version`` (flow en marcha): el completo de menor versión posterior.
-    Sin ella (primera vez o full refresh): el completo más reciente.
+    With ``latest_version`` (flow running): the complete one with the lowest later version.
+    Without it (first time or full refresh): the most recent complete one.
     """
     complete = [
         r for r in runs

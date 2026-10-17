@@ -1,200 +1,204 @@
 # odp-ingestion-bundle
 
-Bundle de ingesta CLEX → bronze → silver de la ONYX Data Platform (ODP), desplegado con DABs.
+CLEX → bronze → silver ingestion bundle for the ONYX Data Platform (ODP), deployed with DABs.
 
-- **Un job por contenedor del landing** (contenedor = data custodian × instancia de CLEX), con N tablas.
-  Los contenedores se listan en `config/containers.yml`: una entrada es un job.
-- **El manifiesto de CLEX define cada tabla**: destino, ruta, tipo de carga, keys y secuencia.
-- **Bronze con Auto Loader** (sin SDP): una iteración de un for_each por tabla.
-- **Silver con SDP**: consolidación SCD1 con AUTO CDC, réplica de la tabla de origen.
-- **Código en una wheel versionada** (`odp_framework`), fijada por entorno.
+- **One job per landing container** (container = data custodian × CLEX instance), with N tables.
+  Containers are listed in `config/containers.yml`: one entry is one job.
+- **The CLEX manifest defines each table**: target, path, load type, keys and sequence.
+- **Bronze with Auto Loader** (no SDP): one for_each iteration per table.
+- **Silver with SDP**: SCD1 consolidation with AUTO CDC, a replica of the source table.
+- **Code in a versioned wheel** (`odp_framework`), pinned per environment.
 
 ```
-CLEX (otro tenant)                   Workspace odp-dbx-{team}-{env}
+CLEX (another tenant)                Workspace odp-dbx-{team}-{env}
 ──────────────────                   ──────────────────────────────────────────────────────────────────
-data/<tabla>/run_id=R/*.parquet ┐
-_manifests/<tabla>/R.json  ─────┼──► job-{team}-{env}-{contenedor}-ingest          (trigger: file arrival)
-  (al final; lleva load_spec)   │      register  wheel     manifiestos nuevos → odp_manifests
-                                │                          → registro odp_entities → tablas a cargar
-                                │      has_data            ¿alguna tabla con datos nuevos?
-                                │      ingest    for_each  1 iteración por tabla: Auto Loader → bronze
-                                │      silver    SDP       AUTO CDC / FROM SNAPSHOT → réplica SCD1
-                                │      report    wheel     reconciliación (run_if ALL_DONE)
+data/<table>/run_id=R/*.parquet ┐
+_manifests/<table>/R.json  ─────┼──► job-{team}-{env}-{container}-ingest           (trigger: file arrival)
+  (last; carries load_spec)     │      register  wheel     new manifests → odp_manifests
+                                │                          → registry odp_entities → tables to load
+                                │      has_data            any table with new data?
+                                │      ingest    for_each  1 iteration per table: Auto Loader → bronze
+                                │      silver    SDP       AUTO CDC / FROM SNAPSHOT → SCD1 replica
+                                │      report    wheel     reconciliation (run_if ALL_DONE)
 ```
 
-register, las iteraciones de ingest y report comparten un job cluster clásico con autoscaling. Solo silver
-levanta un cluster propio, el de su pipeline.
+register, the ingest iterations and report share one classic job cluster with autoscaling. Only silver
+starts a cluster of its own, the pipeline's.
 
-## Por qué bronze sin SDP y silver con SDP
+## Why bronze without SDP and silver with SDP
 
-- **Bronze (landing → append)**: Auto Loader ya resuelve la detección de ficheros, el exactly-once y la
-  evolución de esquema. Sin SDP:
-  - cada tabla es una iteración que se ve y se reintenta por separado;
-  - solo se procesan las tablas que han recibido datos;
-  - los checkpoints están donde decide la plataforma;
-  - la wheel se instala de la forma estándar en una tarea.
-- **Silver (SCD1)**: AUTO CDC aplica inserts, updates y deletes en orden de secuencia, con eventos
-  desordenados y tombstones. AUTO CDC FROM SNAPSHOT deduce los cambios comparando snapshots. Es justo el
-  código delicado que no queremos mantener a mano.
+- **Bronze (landing → append)**: Auto Loader already handles file discovery, exactly-once and schema
+  evolution. Without SDP:
+  - each table is an iteration that is visible and retried on its own;
+  - only tables that received data are processed;
+  - checkpoints live where the platform decides;
+  - the wheel is installed the standard way, in a task.
+- **Silver (SCD1)**: AUTO CDC applies inserts, updates and deletes in sequence order, with out-of-order
+  events and tombstones. AUTO CDC FROM SNAPSHOT derives the changes by comparing snapshots. That is exactly
+  the delicate code we do not want to maintain by hand.
 
-## Flujo de una ejecución
+## Flow of a run
 
 1. **register** (`odp-register`):
-   - Auto Loader `availableNow` lee los manifiestos nuevos y los añade a `odp_manifests`.
-   - Recalcula `odp_entities` desde **todos** los manifiestos aplicando los guardarraíles. El resultado es
-     determinista e idempotente.
-   - Decide las tablas a cargar: las activas con algún manifiesto posterior al inicio de su última carga
-     correcta (`odp_load_log`). Las que fallaron antes entran solas; las que no recibieron nada, no.
-   - Publica los task values `entities_to_load` (entrada del for_each, recortada al límite de 48 KB),
-     `load_count` y `active_entities`.
-2. **ingest** (`odp-ingest`, una iteración por tabla con concurrencia configurable):
-   - Lee la spec de su tabla del registro.
-   - Auto Loader `availableNow` sobre `data/{source_path}/` hace append directo (`toTable`, exactly-once) a
-     `{bronze}.{contenedor}.{target_table}`, añadiendo `_run_id`, `_source_file` e `_ingested_at`.
-   - Si llega una columna nueva, Auto Loader para el stream a propósito; se relanza dentro de la tarea (hasta
-     3 veces) y la tabla la añade (`mergeSchema`).
-   - Al crear la tabla le pone `delta.appendOnly = true`. Las tablas full se agrupan con `CLUSTER BY (_run_id)`.
-   - Deja constancia en `odp_load_log`, tanto si va bien como si falla.
-   - Recalcula `odp_rejected_runs`: runs cuyos parquet están en la carpeta de una tabla registrada pero cuyo
-     manifiesto se rechaza (inválido, `SPEC_CONFLICT`, `SOURCE_PATH_CONFLICT`).
-3. **silver** (pipeline SDP, `run_if ALL_DONE`): lee el registro y declara una réplica SCD1 por tabla que ya
-   tenga bronze. Si falla la carga de una tabla, el resto se consolida igual: bronze es append exactly-once
-   y los snapshots full solo se aplican completos. Los runs rechazados no se aplican.
-4. **report** (`odp-report`): cruza manifiestos y filas en bronze por run, y hace fallar el job si hay
-   errores propios o de register en esta ejecución, lo que dispara las notificaciones.
+   - Auto Loader `availableNow` reads the new manifests and appends them to `odp_manifests`.
+   - Recomputes `odp_entities` from **all** manifests, applying the guardrails. The result is
+     deterministic and idempotent.
+   - Recomputes `odp_rejected_runs`: runs whose parquet files are in the folder of a registered table but
+     whose manifest is rejected (invalid, `SPEC_CONFLICT`, `SOURCE_PATH_CONFLICT`).
+   - Decides which tables to load: the active ones with some manifest later than the start of their last
+     successful load (`odp_load_log`). Tables that failed before are picked up automatically; those that
+     received nothing are not.
+   - Publishes the task values `entities_to_load` (for_each input, trimmed to the 48 KB limit),
+     `load_count` and `active_entities`.
+2. **ingest** (`odp-ingest`, one iteration per table with configurable concurrency):
+   - Reads its table's spec from the registry.
+   - Auto Loader `availableNow` on `data/{source_path}/` appends directly (`toTable`, exactly-once) to
+     `{bronze}.{container}.{target_table}`, adding `_run_id`, `_source_file` and `_ingested_at`.
+   - When a new column arrives, Auto Loader stops the stream on purpose; it is restarted inside the task (up
+     to 3 times) and the table adds the column (`mergeSchema`).
+   - When it creates the table it sets `delta.appendOnly = true`. Full tables are clustered with
+     `CLUSTER BY (_run_id)`.
+   - Records the outcome in `odp_load_log`, whether it succeeds or fails.
+3. **silver** (SDP pipeline, `run_if ALL_DONE`): reads the registry and declares an SCD1 replica for each
+   table that already has bronze. If one table's load fails, the rest is still consolidated: bronze is
+   exactly-once append and full snapshots are only applied when complete. Rejected runs are not applied.
+4. **report** (`odp-report`): cross-checks manifests against bronze rows per run, and fails the job if
+   there are errors of its own or from register in this run, which triggers the notifications.
 
-## Alta de un contenedor nuevo
+## Onboarding a new container
 
-Se añade una entrada a `config/containers.yml` y se despliega:
+Add an entry to `config/containers.yml` and deploy:
 
 ```yaml
 containers:
-  - container: claims-postgres          # nombre del contenedor en el storage de landing
+  - container: claims-postgres          # name of the container in the landing storage
     custodian: claims
     data_class: confidential
     readers: [grp-datateam01-claims-dbx-reader]
-    environments: [dev]                 # opcional: primero en dev; luego [dev, pre], y quitar el campo = todos
+    environments: [dev]                 # optional: dev first; then [dev, pre], and removing the field = all
 ```
 
-El deploy genera, a partir de la entrada:
-- el job `job-{team}-{env}-claims-postgres-ingest`, con trigger en `.../claims-postgres/_manifests/`;
-- la pipeline `sdp-{team}-{env}-claims-postgres-silver`;
-- los esquemas `claims_postgres` en bronze y en silver, con lectura para `readers`;
-- el Volume `odp_system`.
+From that entry, the deploy generates:
+- the job `job-{team}-{env}-claims-postgres-ingest`, with a trigger on `.../claims-postgres/_manifests/`;
+- the pipeline `sdp-{team}-{env}-claims-postgres-silver`;
+- the `claims_postgres` schemas in bronze and in silver, readable by `readers`;
+- the `odp_system` Volume.
 
-La ruta no se escribe: sale del naming, `abfss://{container}@{storage_account}...`. Solo hay que indicar
-`storage_account` si el contenedor está en otra cuenta. Overrides opcionales por contenedor: `ingest`,
-`pipelines`, `trigger` y `report`. `active: false` es una pausa: quita el job y conserva esquemas, Volume,
-pipeline y datos. Borrar la entrada es la baja definitiva: el deploy borraría la pipeline, y con ella sus
-tablas de silver, y los esquemas; el CLI pide confirmación y el CI, sin `--auto-approve`, se para.
+The path is not written anywhere: it comes from the naming, `abfss://{container}@{storage_account}...`.
+`storage_account` is only needed if the container lives in another account. Optional per-container
+overrides: `ingest`, `pipelines`, `trigger` and `report`. `active: false` is a pause: it removes the job and
+keeps schemas, Volume, pipeline and data. Deleting the entry is the permanent removal: the deploy would
+delete the pipeline, and with it its silver tables, and the schemas; the CLI asks for confirmation and the
+CI, without `--auto-approve`, stops.
 
-**Fuera del bundle** (infraestructura, una vez por contenedor):
-1. Crear el contenedor en el storage de landing (Terraform).
-2. Dar al SPN de CLEX escritura solo en ese contenedor.
-3. Si las external locations son por cuenta, no hay nada más que hacer. Si son por contenedor, crear la
-   nueva con `READ FILES` para el `run_as_sp` y activarle file events.
+**Outside the bundle** (infrastructure, once per container):
+1. Create the container in the landing storage (Terraform).
+2. Give the CLEX SPN write access to that container only.
+3. If external locations are per account, there is nothing else to do. If they are per container, create
+   the new one with `READ FILES` for the `run_as_sp` and enable file events on it.
 
-Las **tablas** de un contenedor no se configuran: llegan solas con los manifiestos (ver más abajo).
+The **tables** of a container are not configured: they arrive on their own with the manifests (see below).
 
-## Checkpoints: rutas fijas, nunca desde el manifiesto
+## Checkpoints: fixed paths, never from the manifest
 
-El checkpoint es la identidad de un stream: si cambiara, Auto Loader volvería a leer todo el landing y
-duplicaría bronze. Todos viven en el Volume de plataforma del contenedor:
+A checkpoint is the identity of a stream: if it changed, Auto Loader would read the whole landing again
+and duplicate bronze. They all live in the container's platform Volume:
 
 ```
-/Volumes/{bronze}/{contenedor}/odp_system/
-  checkpoints/odp_manifests           lectura de manifiestos (register)
-  autoloader/{tabla}/checkpoint       Auto Loader de cada tabla (ingest)
-  autoloader/{tabla}/schema           esquema inferido de cada tabla
+/Volumes/{bronze}/{container}/odp_system/
+  checkpoints/odp_manifests           manifest reading (register)
+  autoloader/{table}/checkpoint       Auto Loader for each table (ingest)
+  autoloader/{table}/schema           inferred schema of each table
 ```
 
-Los checkpoints de silver los gestiona SDP. El Volume solo lo escribe el `run_as_sp`. Si se borra el
-checkpoint de una tabla, se relee lo que quede en el landing y hay duplicados en bronze, que se pueden
-quitar con `_source_file`.
+SDP manages the silver checkpoints. Only the `run_as_sp` writes to the Volume. If a table's checkpoint is
+deleted, whatever is left in the landing is reread and bronze gets duplicates, which can be removed with
+`_source_file`.
 
-## Guardarraíles sobre lo que pide CLEX
+## Guardrails on what CLEX asks for
 
-| Regla | Si no se cumple |
+| Rule | If it is not met |
 |---|---|
-| Manifiesto conforme al contrato (`odp_framework.manifest.validate_manifest`) | `INVALID_MANIFEST`, no se registra |
-| `target_table` es solo un nombre de tabla: el catálogo y el esquema los pone la plataforma | inválido |
-| `source_path` dentro de `data/` del contenedor, sin `..`; `data_path` = `data/{source_path}/run_id={run_id}/` | inválido |
-| `source_path`, `load_type`, `keys`, `sequence_by` y `operation_column` no cambian una vez registrada la tabla | `SPEC_CONFLICT`, el run no se asocia |
-| `schema_hints`, `delete_values` y `allow_empty_snapshot` solo cambian subiendo `spec_version` | `SPEC_CHANGED_WITHOUT_VERSION` |
-| Dos tablas no pueden leer la misma `source_path` ni rutas anidadas (`a/b/c` y `a/b/c/d`: Auto Loader lee recursivamente) | `SOURCE_PATH_CONFLICT` |
-| La especificación registrada es la del primer manifiesto aceptado, por orden de llegada; uno que llegue tarde con un `run_id` anterior no la cambia | `SPEC_CONFLICT` |
+| Manifest compliant with the contract (`odp_framework.manifest.validate_manifest`) | `INVALID_MANIFEST`, not registered |
+| `target_table` is only a table name: the platform sets the catalog and the schema | invalid |
+| `source_path` inside the container's `data/`, no `..`; `data_path` = `data/{source_path}/run_id={run_id}/` | invalid |
+| `source_path`, `load_type`, `keys`, `sequence_by` and `operation_column` do not change once the table is registered | `SPEC_CONFLICT`, the run is not associated |
+| `schema_hints`, `delete_values` and `allow_empty_snapshot` only change by bumping `spec_version` | `SPEC_CHANGED_WITHOUT_VERSION` |
+| Two tables cannot read the same `source_path` nor nested paths (`a/b/c` and `a/b/c/d`: Auto Loader reads recursively) | `SOURCE_PATH_CONFLICT` |
+| The registered spec is the one from the first accepted manifest, in arrival order; a late manifest with an earlier `run_id` does not change it | `SPEC_CONFLICT` |
 
-Un manifiesto erróneo no para el resto de tablas. Los hallazgos se avisan una vez, cuando llega el
-manifiesto.
+A faulty manifest does not stop the other tables. Findings are reported once, when the manifest arrives.
 
-**Runs rechazados.** Auto Loader lee la carpeta entera de una tabla (y sus subcarpetas), así que los parquet
-de un run cuyo manifiesto se rechaza llegan a bronze si caen en la carpeta de una tabla registrada, ya sea la
-que dice `source_path` o la que dice `data_path`. Bronze los conserva como evidencia y silver los excluye por
-`_run_id` (lista en `odp_rejected_runs`). Los runs sin manifiesto (CLEX cortado a mitad) no están en la lista:
-CDC los aplica y full no. Si los parquet de un run llegan
-y se aplican en silver antes que su manifiesto, y ese manifiesto resulta rechazado, el arreglo es un full
-refresh de esa tabla de silver: se reconstruye desde bronze con el filtro ya en vigor.
+**Rejected runs.** Auto Loader reads a table's whole folder (and its subfolders), so the parquet files of a
+run whose manifest is rejected reach bronze if they land in the folder of a registered table, whether the
+one given by `source_path` or by `data_path`. Bronze keeps them as evidence and silver excludes them by
+`_run_id` (listed in `odp_rejected_runs`). Runs without a manifest (CLEX cut off midway) are not on the
+list: CDC applies them and full does not. If a run's parquet files arrive and are applied to silver before
+its manifest, and that manifest turns out to be rejected, the fix is a full refresh of that silver table:
+it is rebuilt from bronze with the filter already in place.
 
-**Quién aprueba una tabla nueva:**
-- `registration: auto`: el control es el PR de la configuración de CLEX.
-- `registration: manual`: solo se cargan las tablas de `approved_entities` del `container.yml`. Es una
-  segunda aprobación por PR, en Databricks.
-- `disabled_entities` da de baja una tabla: deja de cargarse y sus datos se conservan.
+**Who approves a new table:**
+- `registration: auto`: the control is the PR on the CLEX configuration.
+- `registration: manual`: only the tables in `approved_entities` of `container.yml` are loaded. It is a
+  second approval by PR, on the Databricks side.
+- `disabled_entities` retires a table: it stops loading and its data is kept.
 
-## Tablas que genera
+## Generated tables
 
-| Capa | Tabla | Contenido |
+| Layer | Table | Contents |
 |---|---|---|
-| bronze | `odp_manifests` | Todos los manifiestos |
-| bronze | `odp_entities` | Registro de tablas, su estado (ACTIVE / PENDING_APPROVAL / DISABLED) y su último manifiesto |
-| bronze | `odp_load_log` | Una fila por carga de tabla: estado, filas, intentos y error |
-| bronze | `{target_table}` | Todo lo que entrega CLEX, tal cual, más `_run_id`, `_source_file` e `_ingested_at`. Append-only |
-| silver | `{target_table}` | **Réplica SCD1 de la tabla de origen** (con change data feed para las capas siguientes) |
-| bronze | `odp_run_findings` | Hallazgos de register y report |
-| bronze | `odp_rejected_runs` | Runs en bronze que silver no aplica (manifiesto rechazado) |
+| bronze | `odp_manifests` | All manifests |
+| bronze | `odp_entities` | Table registry, its status (ACTIVE / PENDING_APPROVAL / DISABLED) and its latest manifest |
+| bronze | `odp_load_log` | One row per table load: status, rows, attempts and error |
+| bronze | `{target_table}` | Everything CLEX delivers, as is, plus `_run_id`, `_source_file` and `_ingested_at`. Append-only |
+| silver | `{target_table}` | **SCD1 replica of the source table** (with change data feed for the downstream layers) |
+| bronze | `odp_run_findings` | Findings from register and report |
+| bronze | `odp_rejected_runs` | Runs in bronze that silver does not apply (rejected manifest) |
 
-**Snapshots full: solo se aplican completos.** Un run solo se aplica si tiene manifiesto, las filas en
-bronze para su `run_id` coinciden con `row_count` y no está vacío (salvo `allow_empty_snapshot`). Se
-aplican en orden de versión, que sale de la fecha del `run_id`, cada uno en su commit (el change data feed
-refleja cada snapshot). Al empezar de cero (primera vez o full refresh) se parte del snapshot completo más
-reciente, sin repasar el histórico de bronze.
+**Full snapshots: only applied when complete.** A run is only applied if it has a manifest, the bronze rows
+for its `run_id` match `row_count`, and it is not empty (unless `allow_empty_snapshot`). They are applied
+in version order, which comes from the `run_id` timestamp, each in its own commit (the change data feed
+reflects each snapshot). When starting from scratch (first time or full refresh) it starts from the most
+recent complete snapshot, without replaying the bronze history.
 
-**Deletes CDC tardíos.** AUTO CDC recuerda cada delete (tombstone) 7 días
-(`pipelines.cdc.tombstoneGCThresholdInSeconds`; el valor por defecto son 2). Un evento más antiguo que el delete
-que llegue después de ese plazo resucitaría la fila; un full refresh desde bronze no depende de este plazo.
+**Late CDC deletes.** AUTO CDC remembers each delete (tombstone) for 7 days
+(`pipelines.cdc.tombstoneGCThresholdInSeconds`; the default is 2). An event older than the delete that
+arrives after that window would resurrect the row; a full refresh from bronze does not depend on this
+window.
 
-## Estructura
+## Structure
 
 ```
-databricks.yml                 targets dev/pre/pro y variables (wheel, policies, SPs, storage)
+databricks.yml                 dev/pre/pro targets and variables (wheel, policies, SPs, storage)
 resources/__init__.py          load_resources → odp_framework.bundle.build_plan
 config/
-  platform.yml                 naming, layout, registro, ingest (concurrencia, cluster), silver, trigger
-  containers.yml               lista de contenedores: una entrada = un job (custodian, readers,
+  platform.yml                 naming, layout, registry, ingest (concurrency, cluster), silver, trigger
+  containers.yml               list of containers: one entry = one job (custodian, readers,
                                environments, registration, approved/disabled_entities, overrides)
-src/pipelines/silver.py        fuente SDP de silver: config del contenedor + tablas del registro → wheel
-src/odp_framework/             la wheel
-  manifest.py                  contrato con CLEX y guardarraíles
-  registry.py                  manifiestos → registro de tablas; qué tablas cargar
-  ingest.py                    bronze con Auto Loader (una tabla)
-  sdp/silver.py                consolidación SCD1 (AUTO CDC / FROM SNAPSHOT)
-  snapshot.py  reconcile.py    selección de snapshot y reconciliación (lógica pura)
+src/pipelines/silver.py        silver SDP source: container config + registry tables → wheel
+src/odp_framework/             the wheel
+  manifest.py                  CLEX contract and guardrails
+  registry.py                  manifests → table registry; which tables to load
+  ingest.py                    bronze with Auto Loader (one table)
+  sdp/silver.py                SCD1 consolidation (AUTO CDC / FROM SNAPSHOT)
+  snapshot.py  reconcile.py    snapshot selection and reconciliation (pure logic)
   tasks/register.py  tasks/ingest.py  tasks/report.py    entry points odp-register, odp-ingest, odp-report
-  e2e.py  tasks/e2e.py         prueba end-to-end: simulador de CLEX, escenario y comprobaciones (odp-e2e)
-  config.py  bundle.py         deploy: validación de container.yml y generación de recursos
-samples/                       manifiestos de ejemplo (contrato 2.0) y disposición del landing
-scripts/publish_wheel.sh       publicación inmutable (e idempotente) de la wheel en el Volume del entorno
+  e2e.py  tasks/e2e.py         end-to-end test: CLEX simulator, scenario and checks (odp-e2e)
+  config.py  bundle.py         deploy: container.yml validation and resource generation
+samples/                       sample manifests (contract 2.0) and landing layout
+scripts/publish_wheel.sh       immutable (and idempotent) publication of the wheel to the environment Volume
 ci/                            Azure DevOps: tests → dev + e2e → pre → pro
-docs/DESPLIEGUE.md             cómo desplegar y probar, paso a paso
-tests/                         133 tests (sin Spark: dobles de prueba para spark y dp; el escenario e2e
-                               se comprueba contra un modelo de referencia en SQLite)
+docs/DEPLOYMENT.md             what is needed and how to deploy to Databricks, from dev to pro
+docs/TESTING_AND_OPERATIONS.md e2e, test with real CLEX, monitoring queries and operations
+tests/                         133 tests (no Spark: test doubles for spark and dp; the e2e scenario
+                               is checked against a reference model in SQLite)
 ```
 
-## Contrato con CLEX (2.0)
+## CLEX contract (2.0)
 
 ```
 data/{source_path}/run_id={run_id}/part-*.parquet
-_manifests/{source_path}/{run_id}.json        ← al final
+_manifests/{source_path}/{run_id}.json        ← last
 ```
 
 ```json
@@ -218,103 +222,100 @@ _manifests/{source_path}/{run_id}.json        ← al final
 }
 ```
 
-- `run_id` = `YYYYMMDDTHHMMSSZ_<id>` (UTC de la extracción). Una carpeta por run; nunca se sobrescribe.
-- CDC: operación normalizada, secuencia creciente por PK y nunca NULL, deletes incluidos, carga inicial como
+- `run_id` = `YYYYMMDDTHHMMSSZ_<id>` (UTC of the extraction). One folder per run; never overwritten.
+- CDC: normalised operation, sequence increasing per PK and never NULL, deletes included, initial load as
   inserts.
-- Validador para el equipo de CLEX: `odp_framework.manifest.validate_manifest(manifiesto)`.
+- Validator for the CLEX team: `odp_framework.manifest.validate_manifest(manifest)`.
 
-## Versionado del código (wheel)
+## Code versioning (wheel)
 
-1. Cambio en `src/odp_framework` → subir versión en `pyproject.toml` y `__init__.py`.
-2. CI: tests → `scripts/publish_wheel.sh <env>` publica la wheel en `/Volumes/odp_platform_<env>/libs/wheels/`.
-   Nunca sobrescribe: si la versión ya existe con el mismo contenido no hace nada, y si existe con otro
-   contenido falla.
-3. PR que cambia `framework_wheel` del target → pasa por dev (con e2e) y pre antes de pro.
+1. Change in `src/odp_framework` → bump the version in `pyproject.toml` and `__init__.py`.
+2. CI: tests → `scripts/publish_wheel.sh <env>` publishes the wheel to `/Volumes/odp_platform_<env>/libs/wheels/`.
+   It never overwrites: if the version already exists with the same content it does nothing, and if it
+   exists with different content it fails.
+3. PR changing the target's `framework_wheel` → goes through dev (with e2e) and pre before pro.
 
-Usan la wheel las tareas del job (`libraries.whl`) y la pipeline de silver (`environment.dependencies`). El
-deploy avisa si la versión fijada no coincide con la del generador.
+The job tasks (`libraries.whl`) and the silver pipeline (`environment.dependencies`) use the wheel. The
+deploy warns if the pinned version does not match the generator's.
 
-## Despliegue y pruebas
+## Deployment and testing
 
-Paso a paso en [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md): prerrequisitos, primer despliegue en dev, prueba
-end-to-end, prueba con CLEX real, promoción a pre y pro por CI, operación y marcha atrás.
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): requirements (who, how to check them), open decisions,
+  configuration, deployment from dev to pro, verification and common errors.
+- [`docs/TESTING_AND_OPERATIONS.md`](docs/TESTING_AND_OPERATIONS.md): end-to-end test, test with real CLEX,
+  monitoring queries, testing in pre and operations.
 
 ```bash
 uv sync && uv run pytest
 scripts/publish_wheel.sh dev
 databricks bundle deploy -t dev
-databricks bundle run e2e_e2e_selftest -t dev      # simula a CLEX en 3 pasos y comprueba bronze/silver
+databricks bundle run e2e_e2e_selftest -t dev      # simulates CLEX in 3 steps and checks bronze/silver
 ```
 
-En `dev` (`mode: development`) cada desarrollador tiene sus propios esquemas (`dev_<usuario>_<contenedor>`),
-jobs con prefijo `[dev usuario]` y triggers en pausa. En pre y pro despliega el CI (`ci/`) con
-`svc-dbks-{team}-{env}-deploy` y jobs y pipelines se ejecutan como `run_as_sp`.
+In `dev` (`mode: development`) each developer gets their own schemas (`dev_<user>_<container>`), jobs
+prefixed `[dev user]` and paused triggers. In pre and pro the CI (`ci/`) deploys with
+`svc-dbks-{team}-{env}-deploy`, and jobs and pipelines run as `run_as_sp`.
 
-## Requisitos en el workspace
+## Workspace requirements
 
-- Catálogos `odp_{team}_{env}_bronze` y `_silver`. Con `manage_schemas: "true"` (valor por defecto) el
-  bundle crea los esquemas de cada contenedor (con grants para `readers`) y el Volume `odp_system`. Quien
-  despliega necesita `USE CATALOG` y `CREATE SCHEMA` en ambos catálogos.
-- External location sobre el storage de landing con `READ FILES` para el `run_as_sp`. El contenedor
-  `e2e-selftest` necesita además `WRITE FILES` para quien ejecute el e2e (el simulador escribe en él).
-- **File events** en esa external location (`file_events: "true"`). Sin ellos hay un máximo de 50 jobs con
-  trigger por workspace y 10.000 ficheros por ruta. Requieren roles del Access Connector sobre el storage
-  (Storage Blob Data Contributor, EventGrid EventSubscription Contributor, Storage Queue Data Contributor;
-  lista sacada de la comunidad de Databricks, a confirmar en la documentación oficial) y el resource
-  provider de Event Grid registrado. Hay que pedírselos a Group.
-- Cluster policies:
-  - pipeline de silver: `cluster_type: dlt`, tags obligatorios y modo de acceso standard, que es el que
-    exige Unity Catalog en pipelines clásicas;
-  - job cluster: tags obligatorios y modo de acceso dedicado (`SINGLE_USER`) para el `run_as_sp`.
-- Volume `odp_platform_<env>.libs.wheels` de solo lectura para los equipos.
-- **Lectura de silver por los consumidores.** Las tablas de silver son streaming tables de SDP. Su dueño
-  (el `run_as_sp`) las lee desde cualquier compute. Los demás, desde un SQL warehouse, un cluster con modo de
-  acceso standard, o un cluster dedicado con DBR 15.4+ **solo si el workspace tiene serverless** (el filtrado
-  se ejecuta en serverless). Sin serverless, los jobs de gold y los analistas usan standard o SQL warehouse.
+Full inventory, with owner and how to check each item, in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md#2-requirements). The essentials:
 
-## Qué está validado y qué falta probar
+- Azure and network: workspace with Unity Catalog, landing account with one container per entry in
+  `containers.yml`, Access Connector, private endpoints from the workspace and a private route from the
+  CLEX ADF (another tenant).
+- Unity Catalog: storage credential, landing external location, catalogs `odp_{team}_{env}_bronze` and
+  `_silver`, Volume `odp_platform_<env>.libs.wheels` and the grants that live outside the bundle.
+- Identities: deploy and run-as SPs per environment, Service Principal User role of the former on the
+  latter, groups and `CAN_USE` on the cluster policies.
+- Workspace: job and pipeline cluster policies, DBR 16.4 LTS and `environment.dependencies` in classic
+  pipelines.
+- Silver consumers: without serverless, SQL warehouse or standard clusters (the tables are SDP streaming
+  tables).
 
-Validado aquí:
+## What is validated and what remains to be tested
 
-- 133 tests en Python 3.11 y 3.13:
-  - lista de contenedores (validación, alta progresiva por entorno, overrides, grants, e2e solo fuera de pro);
-  - contrato y guardarraíles (rutas anidadas, orden de llegada); runs rechazados;
-  - registro: alta, conflictos, versiones, aprobación y qué tablas cargar;
-  - Auto Loader de bronze: rutas, checkpoints, reintento por cambio de esquema, propiedades;
-  - silver: AUTO CDC, snapshots, espera a bronze, exclusión de runs rechazados;
-  - las tareas de punta a punta con dobles de prueba;
-  - el escenario e2e reproducido con la lógica del framework y una referencia SCD1: cada comprobación del
-    e2e se ejecuta en SQLite antes de llegar al workspace.
-- Recursos generados contra los modelos tipados de `databricks-bundles` 1.21.
-- `databricks bundle validate` (CLI 1.21) de dev, pre y pro contra un workspace simulado, y `bundle plan`
-  de dev: el esquema prefijado de `mode: development` llega resuelto a `config_json`, `odp.config` y el Volume.
+Validated here:
 
-Lo cubre el job e2e en el workspace (docs/DESPLIEGUE.md, paso 4):
+- 133 tests on Python 3.11 and 3.13:
+  - container list (validation, progressive rollout per environment, overrides, grants, e2e never in pro);
+  - contract and guardrails (nested paths, arrival order); rejected runs;
+  - registry: onboarding, conflicts, versions, approval and which tables to load;
+  - bronze Auto Loader: paths, checkpoints, retry on schema change, properties;
+  - silver: AUTO CDC, snapshots, waiting for bronze, exclusion of rejected runs;
+  - the tasks end to end with test doubles;
+  - the e2e scenario replayed with the framework logic and an SCD1 reference: every e2e check runs on
+    SQLite before reaching the workspace.
+- Resources generated against the typed models of `databricks-bundles` 1.21.
+- `databricks bundle validate` (CLI 1.21) for dev, pre and pro against a simulated workspace, and
+  `bundle plan` for dev: the prefixed schema of `mode: development` reaches `config_json`, `odp.config` and
+  the Volume resolved.
 
-1. Wheel desde un Volume en la pipeline **clásica** de silver (`environment.dependencies`, en Public Preview).
-2. Que un flow full no falle en las actualizaciones en las que no llega ningún snapshot nuevo (paso 3:
-   snapshot incompleto).
-3. Columna nueva de punta a punta: reintento de Auto Loader en bronze y evolución del destino de AUTO CDC.
-4. Desorden, deletes y eventos atrasados en AUTO CDC; altas, bajas y cambios en FROM SNAPSHOT.
-5. Run en conflicto: llega a bronze y no a silver.
+Covered by the e2e job in the workspace (docs/TESTING_AND_OPERATIONS.md, section 1):
 
-Pendiente de medir con volumen real (pre):
+1. Wheel from a Volume in the **classic** silver pipeline (`environment.dependencies`, in Public Preview).
+2. That a full flow does not fail in updates where no new snapshot arrives (step 3: incomplete snapshot).
+3. New column end to end: Auto Loader retry in bronze and AUTO CDC target evolution.
+4. Out-of-order events, deletes and late events in AUTO CDC; inserts, deletes and changes in FROM SNAPSHOT.
+5. Conflicting run: reaches bronze and not silver.
 
-6. Cuánto tarda la pipeline de silver en definir el grafo leyendo el registro, con cientos de tablas.
-7. Auto Loader con file events sobre `_manifests/` anidado y la partición `run_id=`.
-8. Qué hacen silver y report (`run_if ALL_DONE`) cuando `has_data` es falso. Si no hay nada que cargar y hay
-   errores, `register` ya falla por su cuenta.
-9. Coste por iteración del for_each, el tiempo de arrancar cada tarea, frente a la concurrencia elegida.
+To be measured with real volume (pre):
 
-## Siguientes pasos
+6. How long the silver pipeline takes to define its graph reading the registry, with hundreds of tables.
+7. Auto Loader with file events on nested `_manifests/` and the `run_id=` partition.
+8. What silver and report (`run_if ALL_DONE`) do when `has_data` is false. If there is nothing to load and
+   there are errors, `register` already fails on its own.
+9. Cost per for_each iteration, the start-up time of each task, against the chosen concurrency.
 
-- Avisar de runs en bronze sin manifiesto (CLEX cortado a mitad de escritura): en CDC ya se aplican a silver;
-  en full no, porque no hay manifiesto que los dé por completos.
-- Refrescar en silver solo las tablas cargadas en esta ejecución (`refresh_selection` de la tarea de
-  pipeline), a partir de la lista de register.
-- Columnas aprobadas por tabla en `load_spec`, si el custodian quiere controlar las columnas nuevas antes de
-  silver. Hoy bronze y silver las absorben.
-- Retención de snapshots full antiguos en bronze (mantener los últimos N runs).
-- Registro incremental cuando `odp_manifests` crezca mucho (hoy se recalcula desde todos los manifiestos).
-  Lo mismo para `odp_rejected_runs`, que no se poda y entra en el plan de silver como lista `NOT IN`.
-- Grants de los esquemas del bundle: decidir con governance quién los gestiona (ver docs/DESPLIEGUE.md, 0.3).
+## Next steps
+
+- Alert on runs in bronze without a manifest (CLEX cut off mid-write): in CDC they are already applied to
+  silver; in full they are not, because there is no manifest declaring them complete.
+- Refresh in silver only the tables loaded in this run (`refresh_selection` of the pipeline task), from
+  register's list.
+- Approved columns per table in `load_spec`, if the custodian wants to control new columns before silver.
+  Today bronze and silver absorb them.
+- Retention of old full snapshots in bronze (keep the last N runs).
+- Incremental registry once `odp_manifests` grows large (today it is recomputed from all manifests). The
+  same for `odp_rejected_runs`, which is never pruned and enters the silver plan as a `NOT IN` list.
+- Grants on the bundle's schemas: decide with governance who manages them (see docs/DEPLOYMENT.md, D3).

@@ -1,4 +1,4 @@
-"""Bronze con Auto Loader (sin SDP), con un Spark de mentira."""
+"""Bronze with Auto Loader (no SDP), with a fake Spark."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def test_autoloader_stream_by_convention(cfg):
     assert stream["path"] == cfg.landing_root + "/data/srv-motors-01/GDWR/dbo/customers/"
     assert stream["cloudFiles.partitionColumns"] == "run_id"
     assert stream["cloudFiles.schemaHints"] == "customer_id BIGINT, _seq BIGINT"
-    # Checkpoint y esquema: rutas fijas en el Volume de la plataforma
+    # Checkpoint and schema: fixed paths in the platform Volume
     vol = "/Volumes/odp_datateam01_dev_bronze/motors_sqlserver/odp_system/autoloader/gdwr_customers"
     assert stream["checkpointLocation"] == f"{vol}/checkpoint"
     assert stream["cloudFiles.schemaLocation"] == f"{vol}/schema"
@@ -135,10 +135,10 @@ def test_existing_table_is_not_altered(cfg):
 
 
 def test_schema_change_restarts_the_stream(cfg):
-    spark = Spark(errors=[UnknownFieldException("[UNKNOWN_FIELD_EXCEPTION] nueva columna")])
+    spark = Spark(errors=[UnknownFieldException("[UNKNOWN_FIELD_EXCEPTION] new column")])
     result = ingest_entity(spark, cfg, CUSTOMERS)
     assert result.attempts == 2 and len(spark.streams) == 2
-    assert result.rows == 20                      # progreso de los dos intentos
+    assert result.rows == 20                      # progress of both attempts
 
 
 def test_schema_changes_have_a_limit(cfg):
@@ -148,7 +148,7 @@ def test_schema_changes_have_a_limit(cfg):
 
 
 def test_other_errors_are_not_retried(cfg):
-    spark = Spark(errors=[RuntimeError("permiso denegado")])
+    spark = Spark(errors=[RuntimeError("permission denied")])
     with pytest.raises(RuntimeError):
         ingest_entity(spark, cfg, CUSTOMERS)
     assert len(spark.streams) == 1
@@ -163,4 +163,4 @@ def test_file_events_option(cfg):
 def test_is_schema_change():
     assert is_schema_change(UnknownFieldException("x"))
     assert is_schema_change(RuntimeError("[UNKNOWN_FIELD_EXCEPTION.NEW_FIELDS_IN_FILE] ..."))
-    assert not is_schema_change(RuntimeError("otro error"))
+    assert not is_schema_change(RuntimeError("another error"))

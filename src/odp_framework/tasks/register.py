@@ -1,22 +1,23 @@
-"""Tarea ``register`` del job (python_wheel_task, entry point ``odp-register``).
+"""``register`` task of the job (python_wheel_task, entry point ``odp-register``).
 
-Primera tarea de cada ejecución:
+First task of every run:
 
-1. Auto Loader (availableNow) lee los manifiestos nuevos de ``_manifests/`` y
-   los añade a ``odp_manifests``. Checkpoint fijo en el Volume ``odp_system``.
-2. Recalcula el registro ``odp_entities`` desde todos los manifiestos
-   (``odp_framework.registry``) y lo sobrescribe.
-3. Decide qué tablas cargar: las activas con algún manifiesto posterior a su
-   última carga correcta (``odp_load_log``). Las que fallaron antes entran solas.
-4. Recalcula ``odp_rejected_runs``: runs cuyos ficheros están en la carpeta de
-   una tabla pero cuyo manifiesto se rechaza. Bronze los carga (Auto Loader lee
-   la carpeta entera); silver los excluye.
-5. Publica los task values que usa el job: ``entities_to_load`` (entrada del
-   for_each), ``load_count`` (condición) y ``active_entities``.
-6. Guarda los hallazgos (manifiestos inválidos, conflictos, pendientes).
+1. Auto Loader (availableNow) reads the new manifests from ``_manifests/`` and
+   appends them to ``odp_manifests``. Fixed checkpoint in the ``odp_system`` Volume.
+2. Rebuilds the ``odp_entities`` registry from all manifests
+   (``odp_framework.registry``) and overwrites it.
+3. Decides which tables to load: the active ones with a manifest newer than
+   their last successful load (``odp_load_log``). Tables that failed before are
+   picked up automatically.
+4. Rebuilds ``odp_rejected_runs``: runs whose files sit in a table's folder but
+   whose manifest is rejected. Bronze loads them (Auto Loader reads the whole
+   folder); silver excludes them.
+5. Publishes the task values used by the job: ``entities_to_load`` (for_each
+   input), ``load_count`` (condition) and ``active_entities``.
+6. Stores the findings (invalid manifests, conflicts, pending tables).
 
-Un manifiesto inválido o en conflicto no para el resto de tablas: se avisa, y
-la tarea ``report`` hace fallar el job al final.
+An invalid or conflicting manifest does not stop the other tables: it is
+reported, and the ``report`` task fails the job at the end.
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ def last_successful_loads(spark, cfg: RuntimeConfig) -> dict[str, datetime]:
 
 def run(spark, cfg: RuntimeConfig, job_run_id: str = "",
         now: datetime | None = None) -> tuple[list[str], int, list[Finding]]:
-    """Devuelve (tablas a cargar, nº de tablas activas, hallazgos)."""
+    """Returns (tables to load, number of active tables, findings)."""
     started = now or utc_now()
     ingest_manifests(spark, cfg)
     manifests = read_all_manifests(spark, cfg)
@@ -94,7 +95,7 @@ def run(spark, cfg: RuntimeConfig, job_run_id: str = "",
         .write.mode("overwrite")
         .saveAsTable(cfg.registry_fqn)
     )
-    # Antes que silver: la pipeline lee esta lista al definir su grafo.
+    # Before silver: the pipeline reads this list when it defines its graph.
     (
         spark.createDataFrame(rejected_rows(rejected_runs(cfg, manifests, entries)),
                               schema=REJECTED_RUNS_SCHEMA_DDL)
@@ -105,8 +106,8 @@ def run(spark, cfg: RuntimeConfig, job_run_id: str = "",
     to_load, pending = fit_task_value(entities_to_load(entries, last_successful_loads(spark, cfg)))
     if pending:
         findings.append(Finding(WARN, "LOAD_LIST_TRUNCATED", None, None,
-                                f"{len(pending)} tablas quedan para la siguiente ejecución "
-                                f"(límite del for_each). Primera: {pending[0]}"))
+                                f"{len(pending)} tables left for the next run "
+                                f"(for_each limit). First: {pending[0]}"))
     if findings:
         (
             spark.createDataFrame(
@@ -132,18 +133,18 @@ def main(argv: list[str] | None = None) -> int:
     set_task_value("load_count", len(to_load))
     set_task_value("active_entities", active)
 
-    print(f"[odp-register] {cfg.container}: {active} tablas activas, {len(to_load)} a cargar, "
-          f"{sum(f.severity == ERROR for f in findings)} errores, {sum(f.severity == WARN for f in findings)} avisos")
+    print(f"[odp-register] {cfg.container}: {active} active tables, {len(to_load)} to load, "
+          f"{sum(f.severity == ERROR for f in findings)} errors, {sum(f.severity == WARN for f in findings)} warnings")
     for f in findings:
         if f.severity in (ERROR, WARN):
             print(f"  {f.severity:5} {f.code:28} {f.entity or '-'} {f.run_id or '-'}: {f.detail}")
-    # Los errores no paran la carga del resto de tablas: report (run_if
-    # ALL_DONE) los hace visibles. Si no hay nada que cargar, el job no llega
-    # a report, así que se falla aquí.
+    # Errors do not stop the other tables from loading: report (run_if
+    # ALL_DONE) surfaces them. If there is nothing to load, the job never
+    # reaches report, so it fails here.
     if has_errors(findings) and not to_load and args.fail_on_error.lower() == "true":
         return 1
     return 0
 
 
-def entrypoint() -> None:  # pragma: no cover - usado por python_wheel_task
+def entrypoint() -> None:  # pragma: no cover - used by python_wheel_task
     exit_with(main(), "odp-register")

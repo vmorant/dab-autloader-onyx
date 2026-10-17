@@ -1,49 +1,49 @@
-# Convenciones de plataforma (las mantiene el equipo de plataforma).
+# Platform conventions (maintained by the platform team).
 #
-# Plantillas disponibles: {team_id} {env} {env_upper} {container}
+# Available templates: {team_id} {env} {env_upper} {container}
 # {container_snake} {storage_account} {custodian} {data_class}
 
 naming:
-  bronze_catalog: "odp_{team_id}_{env}_bronze"      # catálogo por capa
+  bronze_catalog: "odp_{team_id}_{env}_bronze"      # one catalog per layer
   silver_catalog: "odp_{team_id}_{env}_silver"
-  schema: "{container_snake}"                        # esquema = contenedor (aislamiento por custodian)
+  schema: "{container_snake}"                        # schema = container (isolation per custodian)
   landing_root: "abfss://{container}@{storage_account}.dfs.core.windows.net"
   job_name: "job-{team_id}-{env}-{container}-ingest"
   silver_pipeline_name: "sdp-{team_id}-{env}-{container}-silver"
-  e2e_job_name: "job-{team_id}-{env}-{container}-e2e"     # solo contenedores con e2e: true
+  e2e_job_name: "job-{team_id}-{env}-{container}-e2e"     # only containers with e2e: true
 
-layout:                     # contrato con CLEX (ver src/odp_framework/manifest.py)
+layout:                     # contract with CLEX (see src/odp_framework/manifest.py)
   data_dir: data
   manifests_dir: _manifests
   run_partition: run_id
 
 registration:
-  mode: auto                # valor por defecto si container.yml no dice nada
+  mode: auto                # default when containers.yml says nothing
 
-ingest:                     # bronze: Auto Loader en un for_each (una iteración por tabla)
-  concurrency: 8            # tablas en paralelo sobre el job cluster compartido
+ingest:                     # bronze: Auto Loader in a for_each (one iteration per table)
+  concurrency: 8            # tables in parallel on the shared job cluster
   min_workers: 1
   max_workers: 4
-  max_retries: 1            # por tabla; los cambios de esquema se reintentan dentro de la tarea
+  max_retries: 1            # per table; schema changes are retried inside the task
 
-pipelines:                  # silver (SDP), compute clásico (sin serverless de entrada)
-  edition: PRO              # AUTO CDC requiere PRO; ADVANCED si se añaden expectations
+pipelines:                  # silver (SDP), classic compute (no serverless at first)
+  edition: PRO              # AUTO CDC requires PRO; ADVANCED if expectations are added
   channel: CURRENT
   photon: false
   min_workers: 1
   max_workers: 4
 
-trigger:                    # file arrival sobre _manifests/
-  wait_after_last_change_seconds: 300       # agrupa entregas seguidas de CLEX
-  min_time_between_triggers_seconds: 900    # evita arrancar clusters en cadena
+trigger:                    # file arrival on _manifests/
+  wait_after_last_change_seconds: 300       # groups consecutive CLEX deliveries
+  min_time_between_triggers_seconds: 900    # avoids starting clusters back to back
 
 report:
-  pending_alert_hours: 24        # manifiesto sin cargar → ERROR (el landing caduca)
-  row_count_grace_minutes: 60    # margen antes de dar por malo un recuento
-  lookback_days: 7               # manifiestos que revisa cada ejecución
-  fail_on_error: true            # el job falla (y notifica) si hay errores
+  pending_alert_hours: 24        # manifest not loaded → ERROR (the landing expires)
+  row_count_grace_minutes: 60    # margin before a row count is considered wrong
+  lookback_days: 7               # manifests reviewed by each run
+  fail_on_error: true            # the job fails (and notifies) if there are errors
 
-tags:                       # tags obligatorios de FinOps (Azure Policy)
+tags:                       # mandatory FinOps tags (Azure Policy)
   global-Team: "{team_id}"
   global-Environment: "{env_upper}"
   global-Source: "{container}"
